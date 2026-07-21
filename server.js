@@ -4,20 +4,25 @@ const express = require("express");
 const WebSocket = require("ws");
 const crypto = require("crypto");
 const { RSI, SMA } = require("technicalindicators");
-const sqlite3 = require("sqlite3").verbose();
+const sqlite3 = require("sqlite3");
+const { open } = require("sqlite");
+const path = require("path");
 
 const app = express();
 const PORT = process.env.APP_PORT || 3000;
 
-// Database Setup
-const path = require("path");
+// Global DB Handle
+let db;
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, "trades.db");
-const db = new sqlite3.Database(DB_PATH);
+// Initialize Async SQLite Database
+async function initDatabase() {
+  const DB_PATH = process.env.DB_PATH || path.join(__dirname, "trades.db");
+  db = await open({
+    filename: DB_PATH,
+    driver: sqlite3.Database,
+  });
 
-// Create Table
-db.serialize(() => {
-  db.run(`
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS trades (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       symbol TEXT NOT NULL,
@@ -29,7 +34,8 @@ db.serialize(() => {
       timestamp INTEGER NOT NULL
     )
   `);
-});
+  console.log("Database initialized successfully.");
+}
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -203,7 +209,6 @@ app.get("/api/holdings", async (req, res) => {
       return res.status(400).json({ error: data.msg || "Could not fetch balances" });
     }
 
-    // Filter non-zero balances for USDT and tracked symbols
     const trackedAssets = new Set(["USDT", ...SYMBOLS.map((s) => s.toUpperCase().replace("USDT", ""))]);
 
     const activeBalances = data.balances
@@ -239,8 +244,8 @@ app.get("/api/holdings", async (req, res) => {
 });
 
 // 3. Trade History & PnL Analytics Endpoint
-app.get("/api/pnl", (req, res) => {
-  const timeframe = req.query.tf || "all"; // 'day', 'week', 'month', 'all'
+app.get("/api/pnl", async (req, res) => {
+  const timeframe = req.query.tf || "all";
   let timeFilter = 0;
   const now = Date.now();
 
@@ -248,54 +253,56 @@ app.get("/api/pnl", (req, res) => {
   else if (timeframe === "week") timeFilter = now - 7 * 24 * 60 * 60 * 1000;
   else if (timeframe === "month") timeFilter = now - 30 * 24 * 60 * 60 * 1000;
 
-  const trades = db.prepare("SELECT * FROM trades WHERE timestamp >= ? ORDER BY timestamp ASC").all(timeFilter);
+  try {
+    const trades = await db.all("SELECT * FROM trades WHERE timestamp >= ? ORDER BY timestamp ASC", [timeFilter]);
 
-  // Group trades per symbol to compute FIFO Realized PnL
-  const assetPnL = {};
-  let totalRealizedUsdt = 0;
-  let totalVolumeTraded = 0;
+    const assetPnL = {};
+    let totalRealizedUsdt = 0;
+    let totalVolumeTraded = 0;
 
-  trades.forEach((t) => {
-    const sym = t.symbol.toUpperCase();
-    if (!assetPnL[sym]) {
-      assetPnL[sym] = { symbol: sym, buyQty: 0, buyCost: 0, realizedPnl: 0, tradeCount: 0 };
-    }
-
-    assetPnL[sym].tradeCount++;
-    totalVolumeTraded += t.usdt_amount;
-
-    if (t.side.toUpperCase() === "BUY") {
-      assetPnL[sym].buyQty += t.qty;
-      assetPnL[sym].buyCost += t.usdt_amount;
-    } else if (t.side.toUpperCase() === "SELL") {
-      if (assetPnL[sym].buyQty > 0) {
-        const avgBuyPrice = assetPnL[sym].buyCost / assetPnL[sym].buyQty;
-        const costBasisForSale = t.qty * avgBuyPrice;
-        const pnl = t.usdt_amount - costBasisForSale;
-
-        assetPnL[sym].realizedPnl += pnl;
-        totalRealizedUsdt += pnl;
-
-        // Reduce open buy basis proportion
-        assetPnL[sym].buyQty = Math.max(0, assetPnL[sym].buyQty - t.qty);
-        assetPnL[sym].buyCost = Math.max(0, assetPnL[sym].buyCost - costBasisForSale);
+    trades.forEach((t) => {
+      const sym = t.symbol.toUpperCase();
+      if (!assetPnL[sym]) {
+        assetPnL[sym] = { symbol: sym, buyQty: 0, buyCost: 0, realizedPnl: 0, tradeCount: 0 };
       }
-    }
-  });
 
-  res.json({
-    timeframe,
-    totalRealizedPnl: parseFloat(totalRealizedUsdt.toFixed(2)),
-    totalVolumeTraded: parseFloat(totalVolumeTraded.toFixed(2)),
-    assets: Object.values(assetPnL).map((a) => ({
-      ...a,
-      realizedPnl: parseFloat(a.realizedPnl.toFixed(2)),
-    })),
-    tradeCount: trades.length,
-  });
+      assetPnL[sym].tradeCount++;
+      totalVolumeTraded += t.usdt_amount;
+
+      if (t.side.toUpperCase() === "BUY") {
+        assetPnL[sym].buyQty += t.qty;
+        assetPnL[sym].buyCost += t.usdt_amount;
+      } else if (t.side.toUpperCase() === "SELL") {
+        if (assetPnL[sym].buyQty > 0) {
+          const avgBuyPrice = assetPnL[sym].buyCost / assetPnL[sym].buyQty;
+          const costBasisForSale = t.qty * avgBuyPrice;
+          const pnl = t.usdt_amount - costBasisForSale;
+
+          assetPnL[sym].realizedPnl += pnl;
+          totalRealizedUsdt += pnl;
+
+          assetPnL[sym].buyQty = Math.max(0, assetPnL[sym].buyQty - t.qty);
+          assetPnL[sym].buyCost = Math.max(0, assetPnL[sym].buyCost - costBasisForSale);
+        }
+      }
+    });
+
+    res.json({
+      timeframe,
+      totalRealizedPnl: parseFloat(totalRealizedUsdt.toFixed(2)),
+      totalVolumeTraded: parseFloat(totalVolumeTraded.toFixed(2)),
+      assets: Object.values(assetPnL).map((a) => ({
+        ...a,
+        realizedPnl: parseFloat(a.realizedPnl.toFixed(2)),
+      })),
+      tradeCount: trades.length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// 4. Password Protected Trade Endpoint with SQLite Logging
+// 4. Password Protected Trade Endpoint
 app.post("/api/trade", express.json(), async (req, res) => {
   const { symbol, side, usdtAmount, password } = req.body;
 
@@ -331,13 +338,15 @@ app.post("/api/trade", express.json(), async (req, res) => {
       const executedPrice = parseFloat(result.fills?.[0]?.price || marketData[symbol.toUpperCase()]?.prices.slice(-1)[0] || 0);
       const executedQty = parseFloat(result.executedQty || tradeAmount / executedPrice);
 
-      // Save Trade Record into SQLite
-      db.prepare(
-        `
-        INSERT INTO trades (symbol, side, price, qty, usdt_amount, order_id, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `,
-      ).run(symbol.toUpperCase(), side.toUpperCase(), executedPrice, executedQty, tradeAmount, String(result.orderId), timestamp);
+      await db.run(`INSERT INTO trades (symbol, side, price, qty, usdt_amount, order_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
+        symbol.toUpperCase(),
+        side.toUpperCase(),
+        executedPrice,
+        executedQty,
+        tradeAmount,
+        String(result.orderId),
+        timestamp,
+      ]);
 
       sendTelegramAlert(
         `✅ <b>TRADE EXECUTED (${side.toUpperCase()})</b>\n\n` +
@@ -358,8 +367,11 @@ app.post("/api/trade", express.json(), async (req, res) => {
 
 app.use(express.static("public"));
 
+// Start server after Async DB & Bootstrap
 (async () => {
+  await initDatabase();
   await bootstrapHistoricalData();
   connectMultiStreamWS();
+
   app.listen(PORT, () => console.log(`Terminal running on http://localhost:${PORT}`));
 })();
