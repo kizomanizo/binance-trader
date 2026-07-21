@@ -27,7 +27,8 @@
 
     header {
       text-align: center;
-      margin-bottom: 2.5rem;
+      margin-bottom: 2rem;
+      position: relative;
     }
 
     h1 {
@@ -38,8 +39,40 @@
 
     p.subtitle {
       color: var(--text-muted);
-      margin: 0;
+      margin: 0 0 1rem 0;
       font-size: 0.95rem;
+    }
+
+    /* Manual Override Control */
+    .override-bar {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 0.5rem;
+    }
+
+    .override-btn {
+      background: rgba(240, 185, 11, 0.15);
+      border: 1px solid var(--accent-yellow);
+      color: var(--accent-yellow);
+      padding: 0.4rem 1rem;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .override-btn:hover {
+      background: var(--accent-yellow);
+      color: #000;
+    }
+
+    .override-btn.unlocked {
+      background: var(--red-down);
+      border-color: var(--red-down);
+      color: #fff;
     }
 
     .container {
@@ -142,11 +175,16 @@
       font-weight: 700;
     }
 
-    /* Action Buttons Area */
+    /* Action Buttons Area - Hidden by default */
     .btn-group {
-      display: flex;
+      display: none;
+      /* Hidden until unlocked or strategy met */
       gap: 0.5rem;
       margin-top: 0.75rem;
+    }
+
+    .btn-group.visible {
+      display: flex;
     }
 
     .btn-buy {
@@ -201,9 +239,9 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 0.75rem;
-      background: rgba(255, 255, 255, 0.02);
-      border: 1px solid var(--border-color);
+      padding: 1rem;
+      background: rgba(14, 203, 129, 0.05);
+      border: 1px solid var(--green-up);
       border-radius: 8px;
       margin-bottom: 0.75rem;
       font-size: 0.85rem;
@@ -389,15 +427,22 @@
     <header>
       <h1>Binance Micro-Trader Terminal</h1>
       <p class="subtitle">Live 1-Minute Momentum & Surge Scanner</p>
+
+      <!-- Manual Unlock Control -->
+      <div class="override-bar">
+        <button id="unlock-btn" onclick="toggleManualUnlock()" class="override-btn">
+          🔓 Unlock Impulse Trade Controls
+        </button>
+      </div>
     </header>
 
     <div class="grid" id="market-grid"></div>
 
     <div class="logs-container">
-      <div class="logs-header">⚡ Recent Alerts Feed</div>
+      <div class="logs-header">⚡ Recent Strategy Alerts</div>
       <div id="logs-list">
-        <div class="empty-logs">Listening for trade triggers... Signals will appear here when RSI dips ≤ 32 with high
-          volume.</div>
+        <div class="empty-logs">Listening for trade triggers... Signals with active buy controls will appear here when
+          RSI dips ≤ 32 with high volume.</div>
       </div>
     </div>
   </div>
@@ -417,6 +462,49 @@
 
   <script>
     const charts = {};
+    let isManualUnlocked = false;
+    const activeAlerts = new Set(); // Track rendered alert cards
+
+    // Toggle Manual Impulse Mode
+    async function toggleManualUnlock() {
+      const unlockBtn = document.getElementById('unlock-btn');
+
+      if (!isManualUnlocked) {
+        const confirmed = await showConfirmation(
+          'Enable Impulse Trading Mode',
+          'This will temporarily reveal manual BUY/SELL buttons across all cards. They will automatically lock after 1 trade execution.'
+        );
+
+        if (confirmed) {
+          isManualUnlocked = true;
+          unlockBtn.innerText = '🔒 Lock Trade Controls';
+          unlockBtn.classList.add('unlocked');
+          showToast('Unlocked', 'Trade buttons are now visible for single use.', 'warning', 3000);
+          updateButtonVisibility();
+        }
+      } else {
+        relockControls();
+      }
+    }
+
+    function relockControls() {
+      isManualUnlocked = false;
+      const unlockBtn = document.getElementById('unlock-btn');
+      unlockBtn.innerText = '🔓 Unlock Impulse Trade Controls';
+      unlockBtn.classList.remove('unlocked');
+      updateButtonVisibility();
+      showToast('Locked', 'Trade buttons hidden to prevent impulse orders.', 'info', 2000);
+    }
+
+    function updateButtonVisibility() {
+      document.querySelectorAll('.btn-group').forEach(group => {
+        if (isManualUnlocked) {
+          group.classList.add('visible');
+        } else {
+          group.classList.remove('visible');
+        }
+      });
+    }
 
     // Toast Notification System
     function showToast(title, message, type = 'info', duration = 4000) {
@@ -527,7 +615,7 @@
                   <span>Vol Surge:</span>
                   <span id="surge-${m.symbol}">No</span>
                 </div>
-                <div class="btn-group">
+                <div class="btn-group" id="btngroup-${m.symbol}">
                   <button onclick="executeInAppTrade('${m.symbol}', 'BUY', 5.50)" class="btn-buy">
                     BUY $5.50
                   </button>
@@ -556,10 +644,49 @@
           const surgeEl = document.getElementById(`surge-${m.symbol}`);
           surgeEl.innerText = m.volSurge ? 'YES ⚡' : 'No';
           surgeEl.className = m.volSurge ? 'surge-yes' : '';
+
+          // Check if strategy condition is met (RSI <= 32 and Vol Surge)
+          if (m.rsi !== null && m.rsi <= 32 && m.volSurge) {
+            renderAlertCard(m.symbol, m.price, m.rsi);
+          }
         });
+
+        // Ensure visibility state is respected during re-renders
+        updateButtonVisibility();
+
       } catch (err) {
         console.error('Error fetching status:', err);
       }
+    }
+
+    // Render Alert Card with Execution Button when Strategy Triggers
+    function renderAlertCard(symbol, price, rsi) {
+      const alertId = `${symbol}_${price}`;
+      if (activeAlerts.has(alertId)) return; // Avoid duplicate logs
+      activeAlerts.add(alertId);
+
+      const logsList = document.getElementById('logs-list');
+      const emptyMsg = logsList.querySelector('.empty-logs');
+      if (emptyMsg) emptyMsg.remove();
+
+      const item = document.createElement('div');
+      item.className = 'log-item';
+      item.innerHTML = `
+        <div>
+          <div style="font-weight:700; color:var(--green-up);">⚡ STRATEGY TRIGGERED: ${symbol}</div>
+          <div style="color:var(--text-muted); margin-top:0.25rem;">
+            Price: <b>$${price}</b> | RSI: <span style="color:var(--green-up); font-weight:bold;">${rsi}</span>
+          </div>
+        </div>
+        <div style="display:flex; gap:0.5rem;">
+          <button onclick="executeInAppTrade('${symbol}', 'BUY', 5.50)" class="btn-buy" style="padding:0.5rem 1rem;">
+            BUY $5.50 NOW
+          </button>
+        </div>
+      `;
+
+      logsList.prepend(item);
+      showToast('⚡ Strategy Signal', `${symbol} dipped to RSI ${rsi} with Volume Surge!`, 'success', 6000);
     }
 
     async function executeInAppTrade(symbol, side, amount) {
@@ -581,6 +708,11 @@
         const data = await res.json();
         if (data.success) {
           showToast('✓ Order Placed', `${side} ${symbol.toUpperCase()} successful! Order ID: ${data.orderId}`, 'success', 5000);
+
+          // Re-lock controls immediately after trade completes to prevent accidental second clicks
+          if (isManualUnlocked) {
+            relockControls();
+          }
         } else {
           showToast('Trade Failed', data.error || 'Unknown error occurred', 'error', 5000);
         }
