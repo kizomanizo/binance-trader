@@ -364,6 +364,22 @@
     .toast.info {
       border-left-color: #4a9eff;
     }
+
+    /* Executed Alert Card Styling */
+    .log-item.executed {
+      opacity: 0.65;
+      border-style: dashed;
+    }
+
+    .btn-executed {
+      background: var(--border-color) !important;
+      color: var(--green-up) !important;
+      border: 1px solid var(--green-up) !important;
+      cursor: default !important;
+      font-weight: 700;
+      padding: 0.4rem 0.8rem;
+      border-radius: 6px;
+    }
   </style>
 </head>
 
@@ -761,12 +777,63 @@
       }
     }
 
-    async function executeInAppTrade(symbol, side, amount) {
+    // Track executed alert IDs in UI memory
+    const executedAlerts = new Set();
+
+    function renderAlertCard(symbol, price, rsi, action) {
+      const alertId = `${symbol}_${action}_${price}`;
+      if (activeAlerts.has(alertId)) return;
+
+      const createdTime = Date.now();
+      activeAlerts.set(alertId, createdTime);
+
+      const logsList = document.getElementById('logs-list');
+      const emptyMsg = logsList.querySelector('.empty-logs');
+      if (emptyMsg) emptyMsg.remove();
+
+      const item = document.createElement('div');
+      const isBuy = action === 'BUY';
+      item.id = `alert-card-${alertId}`;
+      item.className = `log-item ${isBuy ? 'buy-alert' : 'sell-alert'}`;
+
+      item.innerHTML = `
+    <div>
+      <div style="font-weight:700; color:${isBuy ? 'var(--green-up)' : 'var(--red-down)'};">
+        ${isBuy ? '⚡ BUY SIGNAL' : '🚨 SELL SIGNAL'}: ${symbol}
+        <span class="timestamp-badge" id="time-${alertId}">${formatAlertTime(createdTime)}</span>
+      </div>
+      <div style="color:var(--text-muted); margin-top:0.25rem;">
+        Price: <b>$${price}</b> | RSI: <b>${rsi}</b>
+      </div>
+    </div>
+    <div id="action-container-${alertId}">
+      ${isBuy
+          ? `<button id="btn-${alertId}" onclick="executeInAppTrade('${symbol}', 'BUY', 5.50, '${alertId}')" class="btn-buy" style="padding:0.4rem 0.8rem;">BUY $5.50</button>`
+          : `<button id="btn-${alertId}" onclick="executeInAppTrade('${symbol}', 'SELL', 5.50, '${alertId}')" class="btn-sell" style="padding:0.4rem 0.8rem;">SELL NOW</button>`
+        }
+    </div>
+  `;
+
+      logsList.prepend(item);
+    }
+
+    async function executeInAppTrade(symbol, side, amount, alertId = null) {
       const confirmTitle = `Execute ${side} Order`;
       const confirmMessage = `Execute a MARKET ${side} order for $${amount} USDT worth of ${symbol.toUpperCase()}?`;
 
       const password = await showConfirmationWithPassword(confirmTitle, confirmMessage);
       if (!password) return;
+
+      const btn = alertId ? document.getElementById(`btn-${alertId}`) : null;
+      const originalText = btn ? btn.innerText : '';
+
+      // 1. Immediately disable button & show loading state
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = 'Executing...';
+      }
+
+      showToast('Processing', `Sending ${side} order for ${symbol}...`, 'info', 0);
 
       try {
         const res = await fetch('api/trade', {
@@ -776,15 +843,43 @@
         });
 
         const data = await res.json();
+
         if (data.success) {
-          showToast('✓ Order Placed', `Order ID: ${data.orderId}`, 'success', 5000);
+          showToast('✓ Order Executed', `${side} ${symbol.toUpperCase()} successful! Order ID: ${data.orderId}`, 'success', 5000);
+
+          // 2. Mark Alert Card as EXECUTED in the UI
+          if (alertId) {
+            executedAlerts.add(alertId);
+            const card = document.getElementById(`alert-card-${alertId}`);
+            const actionContainer = document.getElementById(`action-container-${alertId}`);
+
+            if (card) card.classList.add('executed');
+            if (actionContainer) {
+              actionContainer.innerHTML = `<button class="btn-executed" disabled>✓ EXECUTED (#${data.orderId})</button>`;
+            }
+          }
+
+          // Refresh balances & PnL
           fetchHoldings();
           fetchPnL();
+
+          if (isManualUnlocked) {
+            relockControls();
+          }
         } else {
           showToast('Trade Failed', data.error || 'Unknown error', 'error', 4000);
+          // Restore button state on failure
+          if (btn) {
+            btn.disabled = false;
+            btn.innerText = originalText;
+          }
         }
       } catch (err) {
         showToast('Execution Error', err.message, 'error', 4000);
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = originalText;
+        }
       }
     }
 

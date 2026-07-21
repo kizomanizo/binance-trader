@@ -352,6 +352,7 @@ app.get("/api/pnl", (req, res) => {
   }
 });
 
+// Protected Trade Execution Endpoint
 app.post("/api/trade", express.json(), async (req, res) => {
   const { symbol, side, usdtAmount, password } = req.body;
 
@@ -407,7 +408,14 @@ app.post("/api/trade", express.json(), async (req, res) => {
           `<b>Order ID:</b> <code>${result.orderId}</code>`,
       );
 
-      return res.json({ success: true, orderId: result.orderId, details: result });
+      return res.json({
+        success: true,
+        orderId: result.orderId,
+        symbol: symbol.toUpperCase(),
+        side: side.toUpperCase(),
+        executedPrice,
+        details: result,
+      });
     } else {
       return res.status(400).json({ success: false, error: result.msg || "Order rejected by Binance" });
     }
