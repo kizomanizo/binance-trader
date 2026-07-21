@@ -83,7 +83,7 @@
   <script>
     async function updateDashboard() {
       try {
-        const res = await fetch('/api/status');
+        const res = await fetch('api/status');
         const data = await res.json();
         const grid = document.getElementById('market-grid');
         grid.innerHTML = '';
