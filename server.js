@@ -8,7 +8,7 @@ const { RSI, SMA } = require("technicalindicators");
 const app = express();
 const PORT = process.env.APP_PORT || 3000;
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_TOKEN;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const TRADE_PASSWORD = process.env.TRADE_PASSWORD || "admin123";
 
@@ -30,7 +30,7 @@ SYMBOLS.forEach((sym) => {
 // Replace sendTelegramAlert in server.js
 async function sendTelegramAlert(message) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-    console.warn("[TELEGRAM SKIPPED] Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID in .env");
+    console.warn("[TELEGRAM SKIPPED] Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID in .env");
     return;
   }
 
