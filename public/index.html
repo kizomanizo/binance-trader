@@ -282,7 +282,9 @@
                   <span>Vol Surge:</span>
                   <span id="surge-${m.symbol}">No</span>
                 </div>
-                <a href="https://www.binance.com/en/trade/${m.symbol}" target="_blank" class="trade-btn">Trade on Binance ↗</a>
+                <button onclick="executeInAppTrade('${m.symbol}', 'BUY', 5.00)" class="trade-btn">
+                  ⚡ Buy $5 ${m.symbol}
+                </button>
               </div>
             `;
             grid.appendChild(card);
@@ -320,6 +322,28 @@
         });
       } catch (err) {
         console.error('Error fetching status:', err);
+      }
+    }
+
+    async function executeInAppTrade(symbol, side, amount) {
+      const confirmText = `Are you sure you want to execute a $${amount} MARKET ${side} order for ${symbol.toUpperCase()}?`;
+      if (!confirm(confirmText)) return;
+
+      try {
+        const res = await fetch('api/trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbol, side, usdtAmount: amount })
+        });
+
+        const data = await res.json();
+        if (data.success) {
+          alert(`Order Successful! Order ID: ${data.orderId}`);
+        } else {
+          alert(`Trade Failed: ${data.error}`);
+        }
+      } catch (err) {
+        alert(`Execution Error: ${err.message}`);
       }
     }
 

@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const WebSocket = require("ws");
 const { RSI, SMA } = require("technicalindicators");
+const crypto = require("crypto");
 
 const app = express();
 const PORT = process.env.APP_PORT || 3000;
@@ -189,6 +190,58 @@ app.get("/api/status", (req, res) => {
     interval: INTERVAL,
     markets: marketsList,
   });
+});
+
+// Trade Execution Endpoint
+app.post("/api/trade", express.json(), async (req, res) => {
+  const { symbol, side, usdtAmount } = req.body;
+  const apiKey = process.env.BINANCE_API_KEY;
+  const secretKey = process.env.BINANCE_SECRET_KEY;
+
+  if (!apiKey || !secretKey) {
+    return res.status(500).json({ success: false, error: "Binance API keys missing from .env" });
+  }
+
+  try {
+    const timestamp = Date.now();
+    const tradeAmount = usdtAmount || process.env.DEFAULT_TRADE_AMOUNT_USDT || 5.0;
+
+    // Construct signed query for Market Order using quoteOrderQty (USDT amount)
+    const query = `symbol=${symbol.toUpperCase()}&side=${side.toUpperCase()}&type=MARKET&quoteOrderQty=${tradeAmount}&timestamp=${timestamp}`;
+
+    const signature = crypto.createHmac("sha256", secretKey).update(query).digest("hex");
+
+    const response = await fetch(`https://api.binance.com/api/v3/order?${query}&signature=${signature}`, {
+      method: "POST",
+      headers: {
+        "X-MBX-APIKEY": apiKey,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    });
+
+    const result = await response.json();
+
+    if (result.orderId) {
+      console.log(`[TRADE EXECUTED] ${side} ${symbol} ($${tradeAmount}) - OrderID: ${result.orderId}`);
+
+      // Notify Telegram on execution
+      sendTelegramAlert(
+        `✅ <b>TRADE EXECUTED VIA APP</b>\n\n` +
+          `<b>Symbol:</b> ${symbol.toUpperCase()}\n` +
+          `<b>Type:</b> MARKET ${side}\n` +
+          `<b>Amount:</b> $${tradeAmount} USDT\n` +
+          `<b>Order ID:</b> <code>${result.orderId}</code>`,
+      );
+
+      return res.json({ success: true, orderId: result.orderId, details: result });
+    } else {
+      console.error("[TRADE REJECTED]", result);
+      return res.status(400).json({ success: false, error: result.msg || "Order rejected by Binance" });
+    }
+  } catch (err) {
+    console.error("Execution exception:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.use(express.static("public"));
