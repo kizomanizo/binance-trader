@@ -1,0 +1,22 @@
+{
+  "name": "Binance Trader",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "Kizito Mrema",
+  "license": "ISC",
+  "description": "A Binance helper to support tracking, telegram notifications and notifications.",
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "node-fetch": "^3.3.2",
+    "technicalindicators": "^3.1.0",
+    "ws": "^8.21.1"
+  }
+}

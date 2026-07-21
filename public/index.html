@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Multi-Pair Binance Scanner</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      background: #0b0e11;
+      color: #eaecef;
+      padding: 2rem;
+    }
+
+    h1 {
+      text-align: center;
+      margin-bottom: 2rem;
+      color: #f0b90b;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      max-width: 1000px;
+      margin: auto;
+    }
+
+    .card {
+      background: #1e2329;
+      border-radius: 8px;
+      padding: 1.25rem;
+      border: 1px solid #2b313a;
+    }
+
+    .symbol {
+      font-size: 1.2rem;
+      font-weight: bold;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .price {
+      font-size: 1.8rem;
+      font-weight: bold;
+      color: #0ecb81;
+      margin: 0.5rem 0;
+    }
+
+    .metric {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.9rem;
+      margin-top: 0.5rem;
+      color: #848e9c;
+    }
+
+    .metric span {
+      color: #eaecef;
+    }
+
+    .badge {
+      background: #f0b90b;
+      color: #000;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: bold;
+    }
+
+    .surge {
+      color: #0ecb81;
+      font-weight: bold;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Binance Micro-Trader Scanner</h1>
+  <div class="grid" id="market-grid"></div>
+
+  <script>
+    async function updateDashboard() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        const grid = document.getElementById('market-grid');
+        grid.innerHTML = '';
+
+        data.markets.forEach(m => {
+          const card = document.createElement('div');
+          card.className = 'card';
+          card.innerHTML = `
+            <div class="symbol">${m.symbol} <span class="badge">${data.interval}</span></div>
+            <div class="price">${m.price ? '$' + m.price : 'Loading...'}</div>
+            <div class="metric">RSI (14): <span>${m.rsi !== null ? m.rsi : '--'}</span></div>
+            <div class="metric">Vol Surge: <span class="${m.volSurge ? 'surge' : ''}">${m.volSurge ? 'YES ⚡' : 'No'}</span></div>
+          `;
+          grid.appendChild(card);
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    }
+    setInterval(updateDashboard, 2000);
+    updateDashboard();
+  </script>
+</body>
+
+</html>
