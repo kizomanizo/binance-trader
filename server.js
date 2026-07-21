@@ -8,17 +8,14 @@ const { RSI, SMA } = require("technicalindicators");
 const app = express();
 const PORT = process.env.APP_PORT || 3000;
 
-// Telegram & Security Config
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const TRADE_PASSWORD = process.env.TRADE_PASSWORD || "admin123";
 
-// Load dynamic symbols from .env
-const SYMBOLS = (process.env.SYMBOLS || "btcusdt,ethusdt,solusdt,dogeusdt").split(",").map((s) => s.trim().toLowerCase());
+const SYMBOLS = (process.env.SYMBOLS || "btcusdt,ethusdt,solusdt,dogeusdt,xrpusdt").split(",").map((s) => s.trim().toLowerCase());
 
 const INTERVAL = "1m";
 
-// Memory store for prices & volumes
 const marketData = {};
 SYMBOLS.forEach((sym) => {
   marketData[sym.toUpperCase()] = {
@@ -30,10 +27,8 @@ SYMBOLS.forEach((sym) => {
   };
 });
 
-// Send Telegram Message
 async function sendTelegramAlert(message) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
-
   const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
   try {
     await fetch(url, {
@@ -50,7 +45,6 @@ async function sendTelegramAlert(message) {
   }
 }
 
-// Pre-fill historical candle data via REST API
 async function bootstrapHistoricalData() {
   console.log(`Bootstrapping historical candle data for: ${SYMBOLS.map((s) => s.toUpperCase()).join(", ")}...`);
   for (const symbol of SYMBOLS) {
@@ -71,8 +65,6 @@ async function bootstrapHistoricalData() {
           marketData[symUpper].lastRsi = rsiVals[rsiVals.length - 1];
           console.log(`[${symUpper}] Bootstrapped ${prices.length} candles. Initial RSI: ${marketData[symUpper].lastRsi.toFixed(2)}`);
         }
-      } else {
-        console.warn(`[${symUpper}] Could not fetch historical candles, starting fresh via WS.`);
       }
     } catch (err) {
       console.error(`Failed to bootstrap ${symbol}:`, err.message);
@@ -80,7 +72,6 @@ async function bootstrapHistoricalData() {
   }
 }
 
-// Connect to Binance Combined WebSocket Stream
 function connectMultiStreamWS() {
   const streamNames = SYMBOLS.map((s) => `${s}@kline_${INTERVAL}`).join("/");
   const wsUrl = `wss://data-stream.binance.com/stream?streams=${streamNames}`;
@@ -111,7 +102,6 @@ function connectMultiStreamWS() {
         if (target.prices.length > 100) target.prices.shift();
         if (target.volumes.length > 100) target.volumes.shift();
 
-        // Calculate RSI safely
         if (target.prices.length >= 15) {
           const rsiValues = RSI.calculate({ values: target.prices, period: 14 });
           if (rsiValues && rsiValues.length > 0) {
@@ -119,7 +109,6 @@ function connectMultiStreamWS() {
           }
         }
 
-        // Calculate 20-period Volume Moving Average safely
         let isVolumeSurge = false;
         if (target.volumes.length >= 20) {
           const volSmaValues = SMA.calculate({ values: target.volumes, period: 20 });
@@ -133,22 +122,29 @@ function connectMultiStreamWS() {
         const rsiDisplay = typeof target.lastRsi === "number" ? target.lastRsi.toFixed(2) : "Calculating...";
         console.log(`[${sym}] Close: $${closePrice} | RSI: ${rsiDisplay} | Vol Surge: ${isVolumeSurge ? "YES" : "No"}`);
 
-        // Check for Buy Signals (5-min cooldown per symbol)
+        // Signal Checks (5-min cooldown)
         const now = Date.now();
         if (target.lastRsi !== null && now - target.lastSignalTime > 5 * 60 * 1000) {
+          // BUY SIGNAL: RSI <= 32
           if (target.lastRsi <= 32 && isVolumeSurge) {
             const entry = closePrice;
-            const takeProfit = (entry * 1.02).toFixed(4);
-            const stopLoss = (entry * 0.992).toFixed(4);
-
             const msg =
-              `⚡ <b>HIGH PROBABILITY BUY SIGNAL (${sym})</b>\n\n` +
+              `⚡ <b>BUY SIGNAL (${sym})</b>\n\n` +
               `<b>RSI:</b> ${target.lastRsi.toFixed(2)} (Oversold)\n` +
-              `<b>Volume:</b> Surge Detected (>1.8x avg)\n` +
-              `<b>Entry Price:</b> $${entry}\n\n` +
-              `🎯 <b>Take Profit (+2%):</b> $${takeProfit}\n` +
-              `🛡️ <b>Stop Loss (-0.8%):</b> $${stopLoss}\n\n` +
-              `<a href="https://www.binance.com/en/trade/${sym}">Trade on Binance</a>`;
+              `<b>Price:</b> $${entry}\n` +
+              `🎯 <b>Take Profit (+2%):</b> $${(entry * 1.02).toFixed(4)}\n` +
+              `🛡️ <b>Stop Loss (-0.8%):</b> $${(entry * 0.992).toFixed(4)}`;
+
+            sendTelegramAlert(msg);
+            target.lastSignalTime = now;
+          }
+          // SELL SIGNAL: RSI >= 70 (Overbought / Take Profit Zone)
+          else if (target.lastRsi >= 70) {
+            const msg =
+              `🚨 <b>SELL / TAKE PROFIT SIGNAL (${sym})</b>\n\n` +
+              `<b>RSI:</b> ${target.lastRsi.toFixed(2)} (Overbought)\n` +
+              `<b>Price:</b> $${closePrice}\n` +
+              `💡 Consider cashing out your position to USDT!`;
 
             sendTelegramAlert(msg);
             target.lastSignalTime = now;
@@ -167,7 +163,6 @@ function connectMultiStreamWS() {
   });
 }
 
-// Dashboard API Endpoint
 app.get("/api/status", (req, res) => {
   const marketsList = Object.keys(marketData).map((sym) => {
     const prices = marketData[sym].prices;
@@ -184,11 +179,9 @@ app.get("/api/status", (req, res) => {
   res.json({ interval: INTERVAL, markets: marketsList });
 });
 
-// Protected Trade Execution Endpoint
 app.post("/api/trade", express.json(), async (req, res) => {
   const { symbol, side, usdtAmount, password } = req.body;
 
-  // Validate Password
   if (!password || password !== TRADE_PASSWORD) {
     console.warn(`[UNAUTHORIZED ATTEMPT] Bad trading password provided for ${symbol}`);
     return res.status(401).json({ success: false, error: "Unauthorized: Incorrect trading password." });
@@ -206,7 +199,6 @@ app.post("/api/trade", express.json(), async (req, res) => {
     const tradeAmount = usdtAmount || 5.5;
 
     const query = `symbol=${symbol.toUpperCase()}&side=${side.toUpperCase()}&type=MARKET&quoteOrderQty=${tradeAmount}&timestamp=${timestamp}`;
-
     const signature = crypto.createHmac("sha256", secretKey).update(query).digest("hex");
 
     const response = await fetch(`https://api.binance.com/api/v3/order?${query}&signature=${signature}`, {
@@ -221,7 +213,6 @@ app.post("/api/trade", express.json(), async (req, res) => {
 
     if (result.orderId) {
       console.log(`[TRADE EXECUTED] ${side} ${symbol} ($${tradeAmount}) - OrderID: ${result.orderId}`);
-
       sendTelegramAlert(
         `✅ <b>AUTHORIZED TRADE EXECUTED</b>\n\n` +
           `<b>Symbol:</b> ${symbol.toUpperCase()}\n` +
@@ -229,7 +220,6 @@ app.post("/api/trade", express.json(), async (req, res) => {
           `<b>Amount:</b> $${tradeAmount} USDT\n` +
           `<b>Order ID:</b> <code>${result.orderId}</code>`,
       );
-
       return res.json({ success: true, orderId: result.orderId, details: result });
     } else {
       console.error("[TRADE REJECTED]", result);
@@ -246,8 +236,5 @@ app.use(express.static("public"));
 (async () => {
   await bootstrapHistoricalData();
   connectMultiStreamWS();
-
-  app.listen(PORT, () => {
-    console.log(`Dashboard running on http://localhost:${PORT}`);
-  });
+  app.listen(PORT, () => console.log(`Dashboard running on http://localhost:${PORT}`));
 })();

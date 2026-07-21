@@ -177,7 +177,6 @@
     /* Action Buttons Area */
     .btn-group {
       display: none;
-      /* Hidden until unlocked */
       gap: 0.5rem;
       margin-top: 0.75rem;
     }
@@ -239,11 +238,19 @@
       justify-content: space-between;
       align-items: center;
       padding: 1rem;
-      background: rgba(14, 203, 129, 0.05);
-      border: 1px solid var(--green-up);
       border-radius: 8px;
       margin-bottom: 0.75rem;
       font-size: 0.85rem;
+    }
+
+    .log-item.buy-alert {
+      background: rgba(14, 203, 129, 0.05);
+      border: 1px solid var(--green-up);
+    }
+
+    .log-item.sell-alert {
+      background: rgba(246, 70, 93, 0.05);
+      border: 1px solid var(--red-down);
     }
 
     .empty-logs {
@@ -439,21 +446,21 @@
     <div class="logs-container">
       <div class="logs-header">⚡ Recent Strategy Alerts</div>
       <div id="logs-list">
-        <div class="empty-logs">Listening for trade triggers... Signals with active buy controls will appear here when
-          RSI dips ≤ 32 with high volume.</div>
+        <div class="empty-logs">Listening for trade triggers... BUY/SELL controls will appear here when market rules are
+          met.</div>
       </div>
     </div>
   </div>
 
   <div class="toast-container" id="toast-container"></div>
 
-  <!-- Confirmation Modal with Password Input -->
+  <!-- Modal requiring Password -->
   <div class="modal-overlay" id="confirmModal">
     <div class="modal">
       <div class="modal-title" id="modalTitle">Confirm Action</div>
       <div class="modal-text" id="modalText"></div>
 
-      <div style="margin-bottom: 1.25rem;" id="passwordContainer">
+      <div style="margin-bottom: 1.25rem;">
         <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:0.4rem;">
           Trading Password Required
         </label>
@@ -534,7 +541,7 @@
       if (duration > 0) setTimeout(() => toast.remove(), duration);
     }
 
-    // Modal requiring Password Entry
+    // Modal requiring Password
     function showConfirmationWithPassword(title, message) {
       return new Promise((resolve) => {
         const modal = document.getElementById('confirmModal');
@@ -664,8 +671,13 @@
           surgeEl.innerText = m.volSurge ? 'YES ⚡' : 'No';
           surgeEl.className = m.volSurge ? 'surge-yes' : '';
 
+          // Render BUY Signal (RSI <= 32)
           if (m.rsi !== null && m.rsi <= 32 && m.volSurge) {
-            renderAlertCard(m.symbol, m.price, m.rsi);
+            renderAlertCard(m.symbol, m.price, m.rsi, 'BUY');
+          }
+          // Render SELL Signal (RSI >= 70)
+          else if (m.rsi !== null && m.rsi >= 70) {
+            renderAlertCard(m.symbol, m.price, m.rsi, 'SELL');
           }
         });
 
@@ -676,8 +688,9 @@
       }
     }
 
-    function renderAlertCard(symbol, price, rsi) {
-      const alertId = `${symbol}_${price}`;
+    // Render Alert Card for BUY or SELL
+    function renderAlertCard(symbol, price, rsi, action) {
+      const alertId = `${symbol}_${action}_${price}`;
       if (activeAlerts.has(alertId)) return;
       activeAlerts.add(alertId);
 
@@ -686,29 +699,40 @@
       if (emptyMsg) emptyMsg.remove();
 
       const item = document.createElement('div');
-      item.className = 'log-item';
+      const isBuy = action === 'BUY';
+      item.className = `log-item ${isBuy ? 'buy-alert' : 'sell-alert'}`;
+
       item.innerHTML = `
         <div>
-          <div style="font-weight:700; color:var(--green-up);">⚡ STRATEGY TRIGGERED: ${symbol}</div>
+          <div style="font-weight:700; color:${isBuy ? 'var(--green-up)' : 'var(--red-down)'};">
+            ${isBuy ? '⚡ BUY SIGNAL' : '🚨 SELL SIGNAL / OVERBOUGHT'}: ${symbol}
+          </div>
           <div style="color:var(--text-muted); margin-top:0.25rem;">
-            Price: <b>$${price}</b> | RSI: <span style="color:var(--green-up); font-weight:bold;">${rsi}</span>
+            Price: <b>$${price}</b> | RSI: <span style="font-weight:bold; color:${isBuy ? 'var(--green-up)' : 'var(--red-down)'};">${rsi}</span>
           </div>
         </div>
-        <div style="display:flex; gap:0.5rem;">
-          <button onclick="executeInAppTrade('${symbol}', 'BUY', 5.50)" class="btn-buy" style="padding:0.5rem 1rem;">
-            BUY $5.50 NOW
-          </button>
+        <div>
+          ${isBuy
+          ? `<button onclick="executeInAppTrade('${symbol}', 'BUY', 5.50)" class="btn-buy" style="padding:0.5rem 1rem;">BUY $5.50 NOW</button>`
+          : `<button onclick="executeInAppTrade('${symbol}', 'SELL', 5.50)" class="btn-sell" style="padding:0.5rem 1rem;">SELL NOW</button>`
+        }
         </div>
       `;
 
       logsList.prepend(item);
-      showToast('⚡ Strategy Signal', `${symbol} dipped to RSI ${rsi} with Volume Surge!`, 'success', 6000);
+      showToast(
+        isBuy ? '⚡ Buy Signal' : '🚨 Sell Signal',
+        `${symbol} reached RSI ${rsi}`,
+        isBuy ? 'success' : 'error',
+        6000
+      );
     }
 
     async function executeInAppTrade(symbol, side, amount) {
       const confirmTitle = `Execute ${side} Order`;
       const confirmMessage = `Execute a MARKET ${side} order for $${amount} USDT worth of ${symbol.toUpperCase()}?`;
 
+      // Always prompts for password!
       const password = await showConfirmationWithPassword(confirmTitle, confirmMessage);
       if (!password) return;
 
