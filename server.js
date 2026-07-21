@@ -14,21 +14,20 @@ const PORT = process.env.APP_PORT || 3000;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, "trades.db");
 let db;
 
-// Save SQLite database state back to file
+// Memory store for user's active Binance spot balances
+const availableBalances = { USDT: 0 };
+
 function saveDatabase() {
   if (!db) return;
   const data = db.export();
-  const buffer = Buffer.from(data);
-  fs.writeFileSync(DB_PATH, buffer);
+  fs.writeFileSync(DB_PATH, Buffer.from(data));
 }
 
-// Initialize sql.js Database
 async function initDatabase() {
   const SQL = await initSqlJs();
 
   if (fs.existsSync(DB_PATH)) {
-    const fileBuffer = fs.readFileSync(DB_PATH);
-    db = new SQL.Database(fileBuffer);
+    db = new SQL.Database(fs.readFileSync(DB_PATH));
     console.log("Loaded existing database from disk.");
   } else {
     db = new SQL.Database();
@@ -87,6 +86,34 @@ async function sendTelegramAlert(message) {
     if (!res.ok || !data.ok) console.error("[TELEGRAM ERROR]", data);
   } catch (err) {
     console.error("Telegram Error:", err.message);
+  }
+}
+
+// Background sync to keep local balances updated for signal validation
+async function updateAccountBalances() {
+  const apiKey = process.env.BINANCE_API_KEY;
+  const secretKey = process.env.BINANCE_SECRET_KEY;
+  if (!apiKey || !secretKey) return;
+
+  try {
+    const timestamp = Date.now();
+    const query = `timestamp=${timestamp}`;
+    const signature = crypto.createHmac("sha256", secretKey).update(query).digest("hex");
+
+    const response = await fetch(`https://api.binance.com/api/v3/account?${query}&signature=${signature}`, {
+      headers: { "X-MBX-APIKEY": apiKey },
+    });
+
+    const data = await response.json();
+    if (data.balances) {
+      data.balances.forEach((b) => {
+        const free = parseFloat(b.free);
+        if (free > 0) availableBalances[b.asset] = free;
+        else delete availableBalances[b.asset];
+      });
+    }
+  } catch (err) {
+    console.error("Failed to update background balances:", err.message);
   }
 }
 
@@ -164,11 +191,23 @@ function connectMultiStreamWS() {
 
         const now = Date.now();
         if (target.lastRsi !== null && now - target.lastSignalTime > 5 * 60 * 1000) {
-          if (target.lastRsi <= 32 && isVolumeSurge) {
-            sendTelegramAlert(`⚡ <b>BUY SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}`);
+          const baseAsset = sym.replace("USDT", "");
+          const currentAssetBalance = availableBalances[baseAsset] || 0;
+          const currentAssetUsdVal = currentAssetBalance * closePrice;
+          const usdtBalance = availableBalances["USDT"] || 0;
+
+          // 1. CONDITIONAL BUY SIGNAL: RSI <= 32 AND Vol Surge AND Free USDT >= $5.50
+          if (target.lastRsi <= 32 && isVolumeSurge && usdtBalance >= 5.5) {
+            sendTelegramAlert(
+              `⚡ <b>BUY SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Available Cash:</b> $${usdtBalance.toFixed(2)} USDT`,
+            );
             target.lastSignalTime = now;
-          } else if (target.lastRsi >= 70) {
-            sendTelegramAlert(`🚨 <b>SELL SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}`);
+          }
+          // 2. CONDITIONAL SELL SIGNAL: RSI >= 70 AND Asset Holding Value >= $5.00
+          else if (target.lastRsi >= 70 && currentAssetUsdVal >= 5.0) {
+            sendTelegramAlert(
+              `🚨 <b>SELL SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Holding Value:</b> $${currentAssetUsdVal.toFixed(2)} USD`,
+            );
             target.lastSignalTime = now;
           }
         }
@@ -182,82 +221,63 @@ function connectMultiStreamWS() {
   ws.on("close", () => setTimeout(connectMultiStreamWS, 3000));
 }
 
-// 1. Dashboard Status API Endpoint
+// Dashboard Status Endpoint with Balance Indicators for UI
 app.get("/api/status", (req, res) => {
   const marketsList = Object.keys(marketData).map((sym) => {
     const prices = marketData[sym].prices;
     const rsiVal = marketData[sym].lastRsi;
+    const baseAsset = sym.replace("USDT", "");
+    const holdingQty = availableBalances[baseAsset] || 0;
+    const currentPrice = prices.length > 0 ? prices[prices.length - 1] : 0;
+    const holdingUsd = holdingQty * currentPrice;
+
     return {
       symbol: sym,
-      price: prices.length > 0 ? prices[prices.length - 1] : null,
+      price: currentPrice || null,
       history: prices.slice(-20),
       rsi: typeof rsiVal === "number" ? parseFloat(rsiVal.toFixed(2)) : null,
       volSurge: marketData[sym].lastVolumeSurge,
+      canBuy: (availableBalances["USDT"] || 0) >= 5.5,
+      canSell: holdingUsd >= 5.0,
+      holdingUsd: parseFloat(holdingUsd.toFixed(2)),
     };
   });
 
-  res.json({ interval: INTERVAL, markets: marketsList });
+  res.json({
+    interval: INTERVAL,
+    markets: marketsList,
+    usdtBalance: parseFloat((availableBalances["USDT"] || 0).toFixed(2)),
+  });
 });
 
-// 2. Binance Spot Holdings API Endpoint
 app.get("/api/holdings", async (req, res) => {
-  const apiKey = process.env.BINANCE_API_KEY;
-  const secretKey = process.env.BINANCE_SECRET_KEY;
+  await updateAccountBalances();
+  const trackedAssets = new Set(["USDT", ...SYMBOLS.map((s) => s.toUpperCase().replace("USDT", ""))]);
 
-  if (!apiKey || !secretKey) {
-    return res.status(500).json({ error: "Missing Binance API credentials" });
-  }
+  const activeBalances = Object.keys(availableBalances)
+    .filter((asset) => trackedAssets.has(asset) && availableBalances[asset] > 0.0001)
+    .map((asset) => {
+      const free = availableBalances[asset];
+      let usdVal = free;
 
-  try {
-    const timestamp = Date.now();
-    const query = `timestamp=${timestamp}`;
-    const signature = crypto.createHmac("sha256", secretKey).update(query).digest("hex");
+      if (asset !== "USDT") {
+        const pair = `${asset}USDT`;
+        const currentPrice = marketData[pair]?.prices.slice(-1)[0] || 0;
+        usdVal = free * currentPrice;
+      }
 
-    const response = await fetch(`https://api.binance.com/api/v3/account?${query}&signature=${signature}`, {
-      headers: { "X-MBX-APIKEY": apiKey },
+      return {
+        asset,
+        free: free.toFixed(4),
+        locked: "0.0000",
+        total: free.toFixed(4),
+        usdValue: usdVal.toFixed(2),
+      };
     });
 
-    const data = await response.json();
-
-    if (!data.balances) {
-      return res.status(400).json({ error: data.msg || "Could not fetch balances" });
-    }
-
-    const trackedAssets = new Set(["USDT", ...SYMBOLS.map((s) => s.toUpperCase().replace("USDT", ""))]);
-
-    const activeBalances = data.balances
-      .filter((b) => {
-        const total = parseFloat(b.free) + parseFloat(b.locked);
-        return trackedAssets.has(b.asset) && total > 0.0001;
-      })
-      .map((b) => {
-        const free = parseFloat(b.free);
-        const locked = parseFloat(b.locked);
-        const total = free + locked;
-        let usdVal = total;
-
-        if (b.asset !== "USDT") {
-          const pair = `${b.asset}USDT`;
-          const currentPrice = marketData[pair]?.prices.slice(-1)[0] || 0;
-          usdVal = total * currentPrice;
-        }
-
-        return {
-          asset: b.asset,
-          free: free.toFixed(4),
-          locked: locked.toFixed(4),
-          total: total.toFixed(4),
-          usdValue: usdVal.toFixed(2),
-        };
-      });
-
-    res.json({ success: true, balances: activeBalances });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  res.json({ success: true, balances: activeBalances });
 });
 
-// 3. Trade History & PnL Analytics Endpoint
 app.get("/api/pnl", (req, res) => {
   const timeframe = req.query.tf || "all";
   let timeFilter = 0;
@@ -323,7 +343,6 @@ app.get("/api/pnl", (req, res) => {
   }
 });
 
-// 4. Password Protected Trade Endpoint with WASM SQLite Persistence
 app.post("/api/trade", express.json(), async (req, res) => {
   const { symbol, side, usdtAmount, password } = req.body;
 
@@ -359,7 +378,6 @@ app.post("/api/trade", express.json(), async (req, res) => {
       const executedPrice = parseFloat(result.fills?.[0]?.price || marketData[symbol.toUpperCase()]?.prices.slice(-1)[0] || 0);
       const executedQty = parseFloat(result.executedQty || tradeAmount / executedPrice);
 
-      // Insert and sync file disk state
       db.run(`INSERT INTO trades (symbol, side, price, qty, usdt_amount, order_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
         symbol.toUpperCase(),
         side.toUpperCase(),
@@ -370,6 +388,7 @@ app.post("/api/trade", express.json(), async (req, res) => {
         timestamp,
       ]);
       saveDatabase();
+      await updateAccountBalances();
 
       sendTelegramAlert(
         `✅ <b>TRADE EXECUTED (${side.toUpperCase()})</b>\n\n` +
@@ -392,6 +411,8 @@ app.use(express.static("public"));
 
 (async () => {
   await initDatabase();
+  await updateAccountBalances();
+  setInterval(updateAccountBalances, 15000); // Background refresh balance cache every 15s
   await bootstrapHistoricalData();
   connectMultiStreamWS();
 
