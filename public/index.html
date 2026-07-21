@@ -733,14 +733,14 @@
 
         const data = await res.json();
         if (data.success) {
-          alert(`✓ Order Placed! ID: ${data.orderId}`);
+          showToast('✓ Order Placed', `Order ID: ${data.orderId}`, 'success', 5000);
           fetchHoldings(); // Refresh balance
           fetchPnL();      // Refresh PnL stats
         } else {
-          alert(`Trade Failed: ${data.error}`);
+          showToast('Trade Failed', data.error || 'Unknown error', 'error', 4000);
         }
       } catch (err) {
-        alert(`Execution Error: ${err.message}`);
+        showToast('Execution Error', err.message, 'error', 4000);
       }
     }
 
