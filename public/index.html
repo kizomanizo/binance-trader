@@ -28,7 +28,6 @@
     header {
       text-align: center;
       margin-bottom: 2rem;
-      position: relative;
     }
 
     h1 {
@@ -46,7 +45,6 @@
     .override-bar {
       display: flex;
       justify-content: center;
-      align-items: center;
       gap: 0.75rem;
       margin-top: 0.5rem;
     }
@@ -63,11 +61,6 @@
       transition: all 0.2s ease;
     }
 
-    .override-btn:hover {
-      background: var(--accent-yellow);
-      color: #000;
-    }
-
     .override-btn.unlocked {
       background: var(--red-down);
       border-color: var(--red-down);
@@ -79,9 +72,84 @@
       margin: 0 auto;
     }
 
+    /* Top Stats Grid */
+    .dashboard-top {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+      margin-bottom: 2rem;
+    }
+
+    @media (max-width: 768px) {
+      .dashboard-top {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .panel-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1.25rem;
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-weight: 700;
+      margin-bottom: 1rem;
+      color: var(--accent-yellow);
+    }
+
+    .time-toggles {
+      display: flex;
+      gap: 0.4rem;
+    }
+
+    .time-btn {
+      background: #2b313a;
+      color: var(--text-muted);
+      border: none;
+      padding: 0.3rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .time-btn.active {
+      background: var(--accent-yellow);
+      color: #000;
+    }
+
+    .pnl-value {
+      font-size: 2rem;
+      font-weight: 800;
+      margin: 0.5rem 0;
+    }
+
+    .holdings-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+
+    .holdings-table th,
+    .holdings-table td {
+      padding: 0.5rem 0;
+      text-align: left;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .holdings-table th {
+      color: var(--text-muted);
+    }
+
+    /* Market Cards Grid */
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
       gap: 1.25rem;
       margin-bottom: 2.5rem;
     }
@@ -94,22 +162,10 @@
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      transition: transform 0.2s ease, border-color 0.2s ease;
-    }
-
-    .card:hover {
-      border-color: #474d57;
-      transform: translateY(-2px);
-    }
-
-    .card-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
     }
 
     .symbol {
-      font-size: 1.25rem;
+      font-size: 1.2rem;
       font-weight: 700;
     }
 
@@ -123,15 +179,15 @@
     }
 
     .price {
-      font-size: 1.8rem;
+      font-size: 1.7rem;
       font-weight: 700;
       color: var(--green-up);
       margin: 0.5rem 0;
     }
 
     .chart-container {
-      height: 60px;
-      margin: 0.5rem 0 1rem 0;
+      height: 50px;
+      margin: 0.5rem 0;
     }
 
     .metrics {
@@ -169,12 +225,6 @@
       color: var(--red-down);
     }
 
-    .surge-yes {
-      color: var(--green-up);
-      font-weight: 700;
-    }
-
-    /* Action Buttons Area */
     .btn-group {
       display: none;
       gap: 0.5rem;
@@ -195,7 +245,6 @@
       padding: 0.6rem;
       border-radius: 6px;
       cursor: pointer;
-      transition: opacity 0.2s;
     }
 
     .btn-sell {
@@ -208,12 +257,6 @@
       padding: 0.6rem;
       border-radius: 6px;
       cursor: pointer;
-      transition: opacity 0.2s;
-    }
-
-    .btn-buy:hover,
-    .btn-sell:hover {
-      opacity: 0.85;
     }
 
     /* Signals Log Section */
@@ -224,20 +267,11 @@
       border: 1px solid var(--border-color);
     }
 
-    .logs-header {
-      font-size: 1.1rem;
-      font-weight: 700;
-      margin-bottom: 1rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-
     .log-item {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 1rem;
+      padding: 0.85rem 1rem;
       border-radius: 8px;
       margin-bottom: 0.75rem;
       font-size: 0.85rem;
@@ -253,103 +287,13 @@
       border: 1px solid var(--red-down);
     }
 
-    .empty-logs {
+    .timestamp-badge {
+      font-size: 0.75rem;
       color: var(--text-muted);
-      font-size: 0.85rem;
-      font-style: italic;
+      margin-left: 0.5rem;
     }
 
-    /* Toast Notifications */
-    .toast-container {
-      position: fixed;
-      bottom: 2rem;
-      right: 2rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.75rem;
-      z-index: 1000;
-      pointer-events: none;
-    }
-
-    .toast {
-      background: var(--card-bg);
-      border: 1px solid var(--border-color);
-      border-left: 4px solid var(--green-up);
-      border-radius: 8px;
-      padding: 1rem 1.25rem;
-      min-width: 300px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      animation: slideIn 0.3s ease-out;
-      pointer-events: auto;
-    }
-
-    .toast.success {
-      border-left-color: var(--green-up);
-    }
-
-    .toast.error {
-      border-left-color: var(--red-down);
-    }
-
-    .toast.warning {
-      border-left-color: var(--accent-yellow);
-    }
-
-    .toast.info {
-      border-left-color: #4a9eff;
-    }
-
-    .toast-icon {
-      font-size: 1.25rem;
-      flex-shrink: 0;
-    }
-
-    .toast-content {
-      flex: 1;
-      font-size: 0.9rem;
-    }
-
-    .toast-title {
-      font-weight: 600;
-      margin-bottom: 0.25rem;
-    }
-
-    .toast-message {
-      color: var(--text-muted);
-      font-size: 0.85rem;
-    }
-
-    .toast-close {
-      background: none;
-      border: none;
-      color: var(--text-muted);
-      cursor: pointer;
-      font-size: 1.25rem;
-      padding: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 24px;
-      height: 24px;
-      flex-shrink: 0;
-    }
-
-    @keyframes slideIn {
-      from {
-        transform: translateX(400px);
-        opacity: 0;
-      }
-
-      to {
-        transform: translateX(0);
-        opacity: 1;
-      }
-    }
-
-    /* Confirmation Modal */
+    /* Modal */
     .modal-overlay {
       display: none;
       position: fixed;
@@ -374,56 +318,25 @@
       padding: 2rem;
       max-width: 400px;
       width: 90%;
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
     }
 
-    .modal-title {
-      font-size: 1.25rem;
-      font-weight: 700;
-      margin-bottom: 0.5rem;
-      color: var(--accent-yellow);
-    }
-
-    .modal-text {
-      color: var(--text-muted);
-      margin-bottom: 1.25rem;
-      line-height: 1.5;
-    }
-
-    .modal-buttons {
+    /* Toast */
+    .toast-container {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
       display: flex;
+      flex-direction: column;
       gap: 0.75rem;
-      justify-content: flex-end;
+      z-index: 1000;
     }
 
-    .modal-btn {
-      padding: 0.5rem 1.25rem;
-      border-radius: 6px;
-      border: 1px solid var(--border-color);
-      font-weight: 600;
-      font-size: 0.85rem;
-      cursor: pointer;
-      transition: all 0.2s ease;
-    }
-
-    .modal-btn-cancel {
-      background: transparent;
-      color: var(--text-muted);
-    }
-
-    .modal-btn-cancel:hover {
-      background: var(--border-color);
-      color: #eaecef;
-    }
-
-    .modal-btn-confirm {
-      background: var(--accent-yellow);
-      color: #000;
-      border-color: var(--accent-yellow);
-    }
-
-    .modal-btn-confirm:hover {
-      opacity: 0.9;
+    .toast {
+      background: var(--card-bg);
+      border-left: 4px solid var(--green-up);
+      border-radius: 8px;
+      padding: 1rem;
+      color: #fff;
     }
   </style>
 </head>
@@ -432,7 +345,7 @@
   <div class="container">
     <header>
       <h1>Binance Micro-Trader Terminal</h1>
-      <p class="subtitle">Live 1-Minute Momentum & Surge Scanner</p>
+      <p class="subtitle">Live 1-Minute Momentum & Portfolio Engine</p>
 
       <div class="override-bar">
         <button id="unlock-btn" onclick="toggleManualUnlock()" class="override-btn">
@@ -441,36 +354,81 @@
       </div>
     </header>
 
+    <!-- Top Dashboard Panels -->
+    <div class="dashboard-top">
+      <!-- Panel 1: Realized PnL Tracker -->
+      <div class="panel-card">
+        <div class="panel-header">
+          <span>📈 Realized PnL</span>
+          <div class="time-toggles">
+            <button class="time-btn" onclick="fetchPnL('day', this)">24H</button>
+            <button class="time-btn" onclick="fetchPnL('week', this)">7D</button>
+            <button class="time-btn" onclick="fetchPnL('month', this)">30D</button>
+            <button class="time-btn active" onclick="fetchPnL('all', this)">ALL</button>
+          </div>
+        </div>
+        <div class="pnl-value" id="pnl-total-val">$0.00</div>
+        <div style="font-size:0.8rem; color:var(--text-muted);" id="pnl-summary-sub">
+          Trades: 0 | Volume: $0.00
+        </div>
+        <div id="asset-pnl-list" style="margin-top:1rem; font-size:0.85rem;"></div>
+      </div>
+
+      <!-- Panel 2: Binance Spot Balance -->
+      <div class="panel-card">
+        <div class="panel-header">
+          <span>💼 Binance Spot Holdings</span>
+          <button class="time-btn" onclick="fetchHoldings()">🔄 Refresh</button>
+        </div>
+        <table class="holdings-table">
+          <thead>
+            <tr>
+              <th>Asset</th>
+              <th>Available</th>
+              <th>Locked</th>
+              <th>Est. USD</th>
+            </tr>
+          </thead>
+          <tbody id="holdings-body">
+            <tr>
+              <td colspan="4" style="color:var(--text-muted);">Loading Spot wallet...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Live Market Cards -->
     <div class="grid" id="market-grid"></div>
 
+    <!-- Alerts Feed -->
     <div class="logs-container">
-      <div class="logs-header">⚡ Recent Strategy Alerts</div>
+      <div style="font-weight:700; margin-bottom:1rem;">⚡ Recent Strategy Alerts</div>
       <div id="logs-list">
-        <div class="empty-logs">Listening for trade triggers... BUY/SELL controls will appear here when market rules are
-          met.</div>
+        <div style="color:var(--text-muted); font-size:0.85rem; font-style:italic;">
+          Listening for triggers... Alerts will display local creation timestamp and live elapsed duration.
+        </div>
       </div>
     </div>
   </div>
 
   <div class="toast-container" id="toast-container"></div>
 
-  <!-- Modal requiring Password -->
+  <!-- Password Modal -->
   <div class="modal-overlay" id="confirmModal">
     <div class="modal">
-      <div class="modal-title" id="modalTitle">Confirm Action</div>
-      <div class="modal-text" id="modalText"></div>
-
+      <div style="font-size:1.2rem; font-weight:700; color:var(--accent-yellow); margin-bottom:0.5rem;" id="modalTitle">
+        Confirm Action</div>
+      <div style="color:var(--text-muted); margin-bottom:1.25rem;" id="modalText"></div>
       <div style="margin-bottom: 1.25rem;">
-        <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:0.4rem;">
-          Trading Password Required
-        </label>
+        <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:0.4rem;">Trading Password
+          Required</label>
         <input type="password" id="tradePasswordInput" placeholder="Enter password"
           style="width:100%; padding:0.6rem; background:#0b0e11; border:1px solid var(--border-color); color:#fff; border-radius:6px; box-sizing:border-box;" />
       </div>
-
-      <div class="modal-buttons">
-        <button class="modal-btn modal-btn-cancel" id="modalCancel">Cancel</button>
-        <button class="modal-btn modal-btn-confirm" id="modalConfirm">Confirm & Execute</button>
+      <div style="display:flex; gap:0.75rem; justify-content:flex-end;">
+        <button class="time-btn" id="modalCancel" style="padding:0.5rem 1rem;">Cancel</button>
+        <button class="time-btn active" id="modalConfirm" style="padding:0.5rem 1rem;">Confirm & Execute</button>
       </div>
     </div>
   </div>
@@ -478,7 +436,129 @@
   <script>
     const charts = {};
     let isManualUnlocked = false;
-    const activeAlerts = new Set();
+    const activeAlerts = new Map(); // Store alert creation timestamps for live relative time updating
+
+    // 1. Fetch Binance Spot Holdings
+    async function fetchHoldings() {
+      try {
+        const res = await fetch('api/holdings');
+        const data = await res.json();
+        const tbody = document.getElementById('holdings-body');
+
+        if (data.success && data.balances) {
+          tbody.innerHTML = data.balances.map(b => `
+            <tr>
+              <td style="font-weight:700;">${b.asset}</td>
+              <td>${b.free}</td>
+              <td style="color:var(--text-muted);">${b.locked}</td>
+              <td style="font-weight:700; color:var(--green-up);">$${b.usdValue}</td>
+            </tr>
+          `).join('');
+        } else {
+          tbody.innerHTML = `<tr><td colspan="4" style="color:var(--red-down);">${data.error || 'Failed to load holdings'}</td></tr>`;
+        }
+      } catch (err) {
+        console.error("Holdings error:", err);
+      }
+    }
+
+    // 2. Fetch Realized PnL Tracker
+    async function fetchPnL(tf = 'all', btn = null) {
+      if (btn) {
+        document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+      }
+
+      try {
+        const res = await fetch(`api/pnl?tf=${tf}`);
+        const data = await res.json();
+
+        const valEl = document.getElementById('pnl-total-val');
+        valEl.innerText = `${data.totalRealizedPnl >= 0 ? '+' : ''}$${data.totalRealizedPnl.toFixed(2)}`;
+        valEl.style.color = data.totalRealizedPnl >= 0 ? 'var(--green-up)' : 'var(--red-down)';
+
+        document.getElementById('pnl-summary-sub').innerText = `Trades: ${data.tradeCount} | Volume: $${data.totalVolumeTraded.toFixed(2)}`;
+
+        const listEl = document.getElementById('asset-pnl-list');
+        if (data.assets && data.assets.length > 0) {
+          listEl.innerHTML = data.assets.map(a => `
+            <div style="display:flex; justify-content:space-between; padding:0.25rem 0; border-top:1px solid var(--border-color);">
+              <span>${a.symbol}</span>
+              <span style="font-weight:bold; color:${a.realizedPnl >= 0 ? 'var(--green-up)' : 'var(--red-down)'};">
+                ${a.realizedPnl >= 0 ? '+' : ''}$${a.realizedPnl.toFixed(2)}
+              </span>
+            </div>
+          `).join('');
+        } else {
+          listEl.innerHTML = `<div style="color:var(--text-muted); font-style:italic;">No closed trade pairs in this timeframe.</div>`;
+        }
+      } catch (err) {
+        console.error("PnL error:", err);
+      }
+    }
+
+    // Relative Time Helper (e.g., "14:32:05 (2m ago)")
+    function formatAlertTime(createdTime) {
+      const now = Date.now();
+      const elapsedSec = Math.floor((now - createdTime) / 1000);
+      const localStr = new Date(createdTime).toLocaleTimeString();
+
+      let agoStr = 'just now';
+      if (elapsedSec >= 60) {
+        const mins = Math.floor(elapsedSec / 60);
+        agoStr = `${mins}m ago`;
+      } else if (elapsedSec > 5) {
+        agoStr = `${elapsedSec}s ago`;
+      }
+
+      return `${localStr} <span style="color:var(--accent-yellow);">(${agoStr})</span>`;
+    }
+
+    // Refresh Alert Durations Live Every Second
+    function refreshAlertDurations() {
+      activeAlerts.forEach((timestamp, elemId) => {
+        const badge = document.getElementById(`time-${elemId}`);
+        if (badge) {
+          badge.innerHTML = formatAlertTime(timestamp);
+        }
+      });
+    }
+
+    function renderAlertCard(symbol, price, rsi, action) {
+      const alertId = `${symbol}_${action}_${price}`;
+      if (activeAlerts.has(alertId)) return;
+
+      const createdTime = Date.now();
+      activeAlerts.set(alertId, createdTime);
+
+      const logsList = document.getElementById('logs-list');
+      const emptyMsg = logsList.querySelector('.empty-logs');
+      if (emptyMsg) emptyMsg.remove();
+
+      const item = document.createElement('div');
+      const isBuy = action === 'BUY';
+      item.className = `log-item ${isBuy ? 'buy-alert' : 'sell-alert'}`;
+
+      item.innerHTML = `
+        <div>
+          <div style="font-weight:700; color:${isBuy ? 'var(--green-up)' : 'var(--red-down)'};">
+            ${isBuy ? '⚡ BUY SIGNAL' : '🚨 SELL SIGNAL'}: ${symbol}
+            <span class="timestamp-badge" id="time-${alertId}">${formatAlertTime(createdTime)}</span>
+          </div>
+          <div style="color:var(--text-muted); margin-top:0.25rem;">
+            Price: <b>$${price}</b> | RSI: <b>${rsi}</b>
+          </div>
+        </div>
+        <div>
+          ${isBuy
+          ? `<button onclick="executeInAppTrade('${symbol}', 'BUY', 5.50)" class="btn-buy" style="padding:0.4rem 0.8rem;">BUY $5.50</button>`
+          : `<button onclick="executeInAppTrade('${symbol}', 'SELL', 5.50)" class="btn-sell" style="padding:0.4rem 0.8rem;">SELL NOW</button>`
+        }
+        </div>
+      `;
+
+      logsList.prepend(item);
+    }
 
     async function toggleManualUnlock() {
       const unlockBtn = document.getElementById('unlock-btn');
@@ -493,55 +573,23 @@
           isManualUnlocked = true;
           unlockBtn.innerText = '🔒 Lock Trade Controls';
           unlockBtn.classList.add('unlocked');
-          showToast('Unlocked', 'Trade buttons revealed.', 'warning', 3000);
           updateButtonVisibility();
         }
       } else {
-        relockControls();
+        isManualUnlocked = false;
+        unlockBtn.innerText = '🔓 Unlock Impulse Trade Controls';
+        unlockBtn.classList.remove('unlocked');
+        updateButtonVisibility();
       }
-    }
-
-    function relockControls() {
-      isManualUnlocked = false;
-      const unlockBtn = document.getElementById('unlock-btn');
-      unlockBtn.innerText = '🔓 Unlock Impulse Trade Controls';
-      unlockBtn.classList.remove('unlocked');
-      updateButtonVisibility();
-      showToast('Locked', 'Trade buttons hidden to prevent impulse orders.', 'info', 2000);
     }
 
     function updateButtonVisibility() {
       document.querySelectorAll('.btn-group').forEach(group => {
-        if (isManualUnlocked) {
-          group.classList.add('visible');
-        } else {
-          group.classList.remove('visible');
-        }
+        if (isManualUnlocked) group.classList.add('visible');
+        else group.classList.remove('visible');
       });
     }
 
-    function showToast(title, message, type = 'info', duration = 4000) {
-      const container = document.getElementById('toast-container');
-      const toast = document.createElement('div');
-      toast.className = `toast ${type}`;
-
-      const icons = { success: '✓', error: '✕', warning: '⚠', info: 'ℹ' };
-
-      toast.innerHTML = `
-        <span class="toast-icon">${icons[type]}</span>
-        <div class="toast-content">
-          <div class="toast-title">${title}</div>
-          <div class="toast-message">${message}</div>
-        </div>
-        <button class="toast-close">×</button>
-      `;
-
-      container.appendChild(toast);
-      toast.querySelector('.toast-close').addEventListener('click', () => toast.remove());
-      if (duration > 0) setTimeout(() => toast.remove(), duration);
-    }
-
-    // Modal requiring Password
     function showConfirmationWithPassword(title, message) {
       return new Promise((resolve) => {
         const modal = document.getElementById('confirmModal');
@@ -584,17 +632,11 @@
         data: {
           labels: Array(20).fill(''),
           datasets: [{
-            data: [],
-            borderColor: '#0ecb81',
-            borderWidth: 1.5,
-            pointRadius: 0,
-            fill: false,
-            tension: 0.2
+            data: [], borderColor: '#0ecb81', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.2
           }]
         },
         options: {
-          responsive: true,
-          maintainAspectRatio: false,
+          responsive: true, maintainAspectRatio: false,
           plugins: { legend: { display: false }, tooltip: { enabled: false } },
           scales: { x: { display: false }, y: { display: false } }
         }
@@ -642,12 +684,8 @@
                   <span id="surge-${m.symbol}">No</span>
                 </div>
                 <div class="btn-group" id="btngroup-${m.symbol}">
-                  <button onclick="executeInAppTrade('${m.symbol}', 'BUY', 5.50)" class="btn-buy">
-                    BUY $5.50
-                  </button>
-                  <button onclick="executeInAppTrade('${m.symbol}', 'SELL', 5.50)" class="btn-sell">
-                    SELL
-                  </button>
+                  <button onclick="executeInAppTrade('${m.symbol}', 'BUY', 5.50)" class="btn-buy">BUY $5.50</button>
+                  <button onclick="executeInAppTrade('${m.symbol}', 'SELL', 5.50)" class="btn-sell">SELL</button>
                 </div>
               </div>
             `;
@@ -663,69 +701,20 @@
           if (m.rsi !== null) {
             rsiEl.innerText = m.rsi;
             rsiEl.className = 'rsi-val ' + (m.rsi <= 32 ? 'rsi-oversold' : m.rsi >= 70 ? 'rsi-overbought' : 'rsi-neutral');
-          } else {
-            rsiEl.innerText = 'Calculating...';
           }
 
           const surgeEl = document.getElementById(`surge-${m.symbol}`);
           surgeEl.innerText = m.volSurge ? 'YES ⚡' : 'No';
           surgeEl.className = m.volSurge ? 'surge-yes' : '';
 
-          // Render BUY Signal (RSI <= 32)
-          if (m.rsi !== null && m.rsi <= 32 && m.volSurge) {
-            renderAlertCard(m.symbol, m.price, m.rsi, 'BUY');
-          }
-          // Render SELL Signal (RSI >= 70)
-          else if (m.rsi !== null && m.rsi >= 70) {
-            renderAlertCard(m.symbol, m.price, m.rsi, 'SELL');
-          }
+          if (m.rsi !== null && m.rsi <= 32 && m.volSurge) renderAlertCard(m.symbol, m.price, m.rsi, 'BUY');
+          else if (m.rsi !== null && m.rsi >= 70) renderAlertCard(m.symbol, m.price, m.rsi, 'SELL');
         });
 
         updateButtonVisibility();
-
       } catch (err) {
-        console.error('Error fetching status:', err);
+        console.error("Dashboard error:", err);
       }
-    }
-
-    // Render Alert Card for BUY or SELL
-    function renderAlertCard(symbol, price, rsi, action) {
-      const alertId = `${symbol}_${action}_${price}`;
-      if (activeAlerts.has(alertId)) return;
-      activeAlerts.add(alertId);
-
-      const logsList = document.getElementById('logs-list');
-      const emptyMsg = logsList.querySelector('.empty-logs');
-      if (emptyMsg) emptyMsg.remove();
-
-      const item = document.createElement('div');
-      const isBuy = action === 'BUY';
-      item.className = `log-item ${isBuy ? 'buy-alert' : 'sell-alert'}`;
-
-      item.innerHTML = `
-        <div>
-          <div style="font-weight:700; color:${isBuy ? 'var(--green-up)' : 'var(--red-down)'};">
-            ${isBuy ? '⚡ BUY SIGNAL' : '🚨 SELL SIGNAL / OVERBOUGHT'}: ${symbol}
-          </div>
-          <div style="color:var(--text-muted); margin-top:0.25rem;">
-            Price: <b>$${price}</b> | RSI: <span style="font-weight:bold; color:${isBuy ? 'var(--green-up)' : 'var(--red-down)'};">${rsi}</span>
-          </div>
-        </div>
-        <div>
-          ${isBuy
-          ? `<button onclick="executeInAppTrade('${symbol}', 'BUY', 5.50)" class="btn-buy" style="padding:0.5rem 1rem;">BUY $5.50 NOW</button>`
-          : `<button onclick="executeInAppTrade('${symbol}', 'SELL', 5.50)" class="btn-sell" style="padding:0.5rem 1rem;">SELL NOW</button>`
-        }
-        </div>
-      `;
-
-      logsList.prepend(item);
-      showToast(
-        isBuy ? '⚡ Buy Signal' : '🚨 Sell Signal',
-        `${symbol} reached RSI ${rsi}`,
-        isBuy ? 'success' : 'error',
-        6000
-      );
     }
 
     async function executeInAppTrade(symbol, side, amount) {
@@ -735,9 +724,6 @@
       const password = await showConfirmationWithPassword(confirmTitle, confirmMessage);
       if (!password) return;
 
-      // Store reference to processing toast (duration 0 = persistent)
-      const processingToast = showToast('Processing', `Authenticating and sending ${side} order...`, 'info', 0);
-
       try {
         const res = await fetch('api/trade', {
           method: 'POST',
@@ -745,26 +731,24 @@
           body: JSON.stringify({ symbol, side, usdtAmount: amount, password })
         });
 
-        // Dismiss the processing toast as soon as response arrives
-        if (processingToast) removeToast(processingToast);
-
         const data = await res.json();
         if (data.success) {
-          showToast('✓ Order Placed', `${side} ${symbol.toUpperCase()} successful! Order ID: ${data.orderId}`, 'success', 5000);
-          if (isManualUnlocked) {
-            relockControls();
-          }
+          alert(`✓ Order Placed! ID: ${data.orderId}`);
+          fetchHoldings(); // Refresh balance
+          fetchPnL();      // Refresh PnL stats
         } else {
-          showToast('Trade Failed', data.error || 'Unknown error occurred', 'error', 5000);
+          alert(`Trade Failed: ${data.error}`);
         }
       } catch (err) {
-        if (processingToast) removeToast(processingToast);
-        showToast('Execution Error', err.message, 'error', 5000);
+        alert(`Execution Error: ${err.message}`);
       }
     }
 
     setInterval(updateDashboard, 2000);
+    setInterval(refreshAlertDurations, 1000); // Live tick for "2m ago" badges
     updateDashboard();
+    fetchHoldings();
+    fetchPnL();
   </script>
 </body>
 
