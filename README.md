@@ -16,14 +16,17 @@ Live 1-minute momentum and volume surge scanner for multiple trading pairs on Bi
 ## Setup
 
 1. Clone the repository and install dependencies:
+
    ```bash
    npm install
    ```
 
 2. Configure environment variables:
+
    ```bash
    cp example.env .env
    ```
+
    Then edit `.env` with your credentials:
    - Binance API keys
    - Telegram bot token and chat ID
@@ -31,6 +34,7 @@ Live 1-minute momentum and volume surge scanner for multiple trading pairs on Bi
    - Default trade amount
 
 3. Start the server:
+
    ```bash
    node server.js
    ```
