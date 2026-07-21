@@ -154,6 +154,8 @@
       border-radius: 6px;
       margin-top: 0.75rem;
       transition: opacity 0.2s;
+      cursor: pointer;
+      border: none;
     }
 
     .trade-btn:hover {
@@ -282,7 +284,7 @@
                   <span>Vol Surge:</span>
                   <span id="surge-${m.symbol}">No</span>
                 </div>
-                <button onclick="executeInAppTrade('${m.symbol}', 'BUY', 5.00)" class="trade-btn cursor-pointer">
+                <button onclick="executeInAppTrade('${m.symbol}', 'BUY', 5.00)" class="trade-btn">
                   ⚡ Buy $5 ${m.symbol}
                 </button>
               </div>
