@@ -732,11 +732,11 @@
       const confirmTitle = `Execute ${side} Order`;
       const confirmMessage = `Execute a MARKET ${side} order for $${amount} USDT worth of ${symbol.toUpperCase()}?`;
 
-      // Always prompts for password!
       const password = await showConfirmationWithPassword(confirmTitle, confirmMessage);
       if (!password) return;
 
-      showToast('Processing', `Authenticating and sending ${side} order...`, 'info', 0);
+      // Store reference to processing toast (duration 0 = persistent)
+      const processingToast = showToast('Processing', `Authenticating and sending ${side} order...`, 'info', 0);
 
       try {
         const res = await fetch('api/trade', {
@@ -744,6 +744,9 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ symbol, side, usdtAmount: amount, password })
         });
+
+        // Dismiss the processing toast as soon as response arrives
+        if (processingToast) removeToast(processingToast);
 
         const data = await res.json();
         if (data.success) {
@@ -755,6 +758,7 @@
           showToast('Trade Failed', data.error || 'Unknown error occurred', 'error', 5000);
         }
       } catch (err) {
+        if (processingToast) removeToast(processingToast);
         showToast('Execution Error', err.message, 'error', 5000);
       }
     }
