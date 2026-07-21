@@ -196,6 +196,191 @@
       font-size: 0.85rem;
       font-style: italic;
     }
+
+    /* Toast Notifications */
+    .toast-container {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      z-index: 1000;
+      pointer-events: none;
+    }
+
+    .toast {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-left: 4px solid #0ecb81;
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      min-width: 300px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      animation: slideIn 0.3s ease-out;
+      pointer-events: auto;
+    }
+
+    .toast.success {
+      border-left-color: var(--green-up);
+    }
+
+    .toast.error {
+      border-left-color: var(--red-down);
+    }
+
+    .toast.warning {
+      border-left-color: var(--accent-yellow);
+    }
+
+    .toast.info {
+      border-left-color: #4a9eff;
+    }
+
+    .toast-icon {
+      font-size: 1.25rem;
+      flex-shrink: 0;
+    }
+
+    .toast-content {
+      flex: 1;
+      font-size: 0.9rem;
+    }
+
+    .toast-title {
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+    }
+
+    .toast-message {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
+    .toast-close {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 1.25rem;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+
+    .toast-close:hover {
+      color: #eaecef;
+    }
+
+    @keyframes slideIn {
+      from {
+        transform: translateX(400px);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+
+    @keyframes slideOut {
+      from {
+        transform: translateX(0);
+        opacity: 1;
+      }
+      to {
+        transform: translateX(400px);
+        opacity: 0;
+      }
+    }
+
+    .toast.removing {
+      animation: slideOut 0.3s ease-in;
+    }
+
+    /* Confirmation Modal */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.7);
+      z-index: 2000;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .modal-overlay.active {
+      display: flex;
+    }
+
+    .modal {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 2rem;
+      max-width: 400px;
+      width: 90%;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    }
+
+    .modal-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+      color: var(--accent-yellow);
+    }
+
+    .modal-text {
+      color: var(--text-muted);
+      margin-bottom: 1.5rem;
+      line-height: 1.5;
+    }
+
+    .modal-buttons {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: flex-end;
+    }
+
+    .modal-btn {
+      padding: 0.5rem 1.25rem;
+      border-radius: 6px;
+      border: 1px solid var(--border-color);
+      font-weight: 600;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .modal-btn-cancel {
+      background: transparent;
+      color: var(--text-muted);
+    }
+
+    .modal-btn-cancel:hover {
+      background: var(--border-color);
+      color: #eaecef;
+    }
+
+    .modal-btn-confirm {
+      background: var(--accent-yellow);
+      color: #000;
+      border-color: var(--accent-yellow);
+    }
+
+    .modal-btn-confirm:hover {
+      opacity: 0.9;
+    }
   </style>
 </head>
 
@@ -217,8 +402,109 @@
     </div>
   </div>
 
+  <!-- Toast Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Confirmation Modal -->
+  <div class="modal-overlay" id="confirmModal">
+    <div class="modal">
+      <div class="modal-title" id="modalTitle">Confirm Action</div>
+      <div class="modal-text" id="modalText"></div>
+      <div class="modal-buttons">
+        <button class="modal-btn modal-btn-cancel" id="modalCancel">Cancel</button>
+        <button class="modal-btn modal-btn-confirm" id="modalConfirm">Confirm</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const charts = {};
+    let confirmResolve = null;
+
+    // Toast Notification System
+    function showToast(title, message, type = 'info', duration = 4000) {
+      const container = document.getElementById('toast-container');
+      const toast = document.createElement('div');
+      toast.className = `toast ${type}`;
+      
+      const icons = {
+        success: '✓',
+        error: '✕',
+        warning: '⚠',
+        info: 'ℹ'
+      };
+
+      toast.innerHTML = `
+        <span class="toast-icon">${icons[type]}</span>
+        <div class="toast-content">
+          <div class="toast-title">${title}</div>
+          <div class="toast-message">${message}</div>
+        </div>
+        <button class="toast-close">×</button>
+      `;
+
+      container.appendChild(toast);
+
+      const closeBtn = toast.querySelector('.toast-close');
+      closeBtn.addEventListener('click', () => removeToast(toast));
+
+      if (duration > 0) {
+        setTimeout(() => removeToast(toast), duration);
+      }
+
+      return toast;
+    }
+
+    function removeToast(toast) {
+      toast.classList.add('removing');
+      setTimeout(() => toast.remove(), 300);
+    }
+
+    // Confirmation Modal
+    function showConfirmation(title, message) {
+      return new Promise((resolve) => {
+        confirmResolve = resolve;
+        const modal = document.getElementById('confirmModal');
+        const modalTitle = document.getElementById('modalTitle');
+        const modalText = document.getElementById('modalText');
+        const confirmBtn = document.getElementById('modalConfirm');
+        const cancelBtn = document.getElementById('modalCancel');
+
+        modalTitle.textContent = title;
+        modalText.textContent = message;
+
+        const handleConfirm = () => {
+          modal.classList.remove('active');
+          resolve(true);
+          confirmResolve = null;
+          cleanup();
+        };
+
+        const handleCancel = () => {
+          modal.classList.remove('active');
+          resolve(false);
+          confirmResolve = null;
+          cleanup();
+        };
+
+        const cleanup = () => {
+          confirmBtn.removeEventListener('click', handleConfirm);
+          cancelBtn.removeEventListener('click', handleCancel);
+          document.removeEventListener('keydown', handleKeydown);
+        };
+
+        const handleKeydown = (e) => {
+          if (e.key === 'Enter') handleConfirm();
+          if (e.key === 'Escape') handleCancel();
+        };
+
+        confirmBtn.addEventListener('click', handleConfirm);
+        cancelBtn.addEventListener('click', handleCancel);
+        document.addEventListener('keydown', handleKeydown);
+
+        modal.classList.add('active');
+      });
+    }
 
     function initChart(symbol, ctx) {
       return new Chart(ctx, {
@@ -251,6 +537,10 @@
         const res = await fetch('api/status');
         const data = await res.json();
         const grid = document.getElementById('market-grid');
+        if (!data.markets) {
+          showToast('Error', 'Invalid response from server', 'error', 3000);
+          return;
+        }
 
         data.markets.forEach(m => {
           if (m.history && charts[m.symbol]) {
@@ -324,12 +614,21 @@
         });
       } catch (err) {
         console.error('Error fetching status:', err);
+        showToast('Connection Error', 'Failed to update market data', 'error', 3000);
       }
     }
 
     async function executeInAppTrade(symbol, side, amount) {
-      const confirmText = `Are you sure you want to execute a $${amount} MARKET ${side} order for ${symbol.toUpperCase()}?`;
-      if (!confirm(confirmText)) return;
+      const confirmTitle = `Execute Trade Order`;
+      const confirmMessage = `Buy $${amount} worth of ${symbol.toUpperCase()}?\n\nThis will execute a MARKET order immediately.`;
+      
+      const confirmed = await showConfirmation(confirmTitle, confirmMessage);
+      if (!confirmed) {
+        showToast('Cancelled', 'Trade order cancelled', 'info', 2000);
+        return;
+      }
+
+      showToast('Processing', 'Executing trade order...', 'info', 0);
 
       try {
         const res = await fetch('api/trade', {
@@ -340,12 +639,12 @@
 
         const data = await res.json();
         if (data.success) {
-          alert(`Order Successful! Order ID: ${data.orderId}`);
+          showToast('✓ Success', `Order executed! Order ID: ${data.orderId}`, 'success', 5000);
         } else {
-          alert(`Trade Failed: ${data.error}`);
+          showToast('Trade Failed', data.error || 'Unknown error occurred', 'error', 4000);
         }
       } catch (err) {
-        alert(`Execution Error: ${err.message}`);
+        showToast('Execution Error', err.message, 'error', 4000);
       }
     }
 
