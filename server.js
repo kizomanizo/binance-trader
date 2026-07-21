@@ -27,11 +27,16 @@ SYMBOLS.forEach((sym) => {
   };
 });
 
+// Replace sendTelegramAlert in server.js
 async function sendTelegramAlert(message) {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    console.warn("[TELEGRAM SKIPPED] Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID in .env");
+    return;
+  }
+
   const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
   try {
-    await fetch(url, {
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -40,8 +45,16 @@ async function sendTelegramAlert(message) {
         parse_mode: "HTML",
       }),
     });
+
+    const data = await res.json();
+
+    if (!res.ok || !data.ok) {
+      console.error("[TELEGRAM ERROR RESPONSE]", data);
+    } else {
+      console.log("[TELEGRAM SENT SUCCESS]", data.result.message_id);
+    }
   } catch (err) {
-    console.error("Telegram Notification Error:", err.message);
+    console.error("Telegram Network Error:", err.message);
   }
 }
 
@@ -236,5 +249,11 @@ app.use(express.static("public"));
 (async () => {
   await bootstrapHistoricalData();
   connectMultiStreamWS();
-  app.listen(PORT, () => console.log(`Dashboard running on http://localhost:${PORT}`));
+
+  app.listen(PORT, () => {
+    console.log(`Dashboard running on http://localhost:${PORT}`);
+
+    // Test Telegram connection on startup
+    sendTelegramAlert("🔔 <b>Trader Engine Online</b>\nTelegram notifications are configured successfully!");
+  });
 })();
