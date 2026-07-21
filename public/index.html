@@ -284,6 +284,7 @@
         transform: translateX(400px);
         opacity: 0;
       }
+
       to {
         transform: translateX(0);
         opacity: 1;
@@ -295,6 +296,7 @@
         transform: translateX(0);
         opacity: 1;
       }
+
       to {
         transform: translateX(400px);
         opacity: 0;
@@ -426,7 +428,7 @@
       const container = document.getElementById('toast-container');
       const toast = document.createElement('div');
       toast.className = `toast ${type}`;
-      
+
       const icons = {
         success: '✓',
         error: '✕',
@@ -621,7 +623,7 @@
     async function executeInAppTrade(symbol, side, amount) {
       const confirmTitle = `Execute Trade Order`;
       const confirmMessage = `Buy $${amount} worth of ${symbol.toUpperCase()}?\n\nThis will execute a MARKET order immediately.`;
-      
+
       const confirmed = await showConfirmation(confirmTitle, confirmMessage);
       if (!confirmed) {
         showToast('Cancelled', 'Trade order cancelled', 'info', 2000);
