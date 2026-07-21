@@ -54,7 +54,7 @@ async function bootstrapHistoricalData() {
     const symUpper = symbol.toUpperCase();
     try {
       // Use data-stream mirror host for REST or fallback
-      const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symUpper}&interval=${INTERVAL}&limit=50`);
+      const response = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${symUpper}&interval=${INTERVAL}&limit=50`);
       const klines = await response.json();
 
       if (Array.isArray(klines) && klines.length >= 15) {
