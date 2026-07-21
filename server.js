@@ -70,7 +70,11 @@ SYMBOLS.forEach((sym) => {
 });
 
 async function sendTelegramAlert(message) {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    console.warn("[TELEGRAM SKIPPED] Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID in .env");
+    return;
+  }
+
   const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
   try {
     const res = await fetch(url, {
@@ -82,10 +86,15 @@ async function sendTelegramAlert(message) {
         parse_mode: "HTML",
       }),
     });
+
     const data = await res.json();
-    if (!res.ok || !data.ok) console.error("[TELEGRAM ERROR]", data);
+    if (!res.ok || !data.ok) {
+      console.error("[TELEGRAM API REJECTED]", data);
+    } else {
+      console.log(`[TELEGRAM SENT SUCCESS] Message ID: ${data.result.message_id}`);
+    }
   } catch (err) {
-    console.error("Telegram Error:", err.message);
+    console.error("Telegram Network Error:", err.message);
   }
 }
 
@@ -412,12 +421,15 @@ app.use(express.static("public"));
 (async () => {
   await initDatabase();
   await updateAccountBalances();
-  setInterval(updateAccountBalances, 15000); // Background refresh balance cache every 15s
+  setInterval(updateAccountBalances, 15000); // Refresh balance cache every 15s
   await bootstrapHistoricalData();
   connectMultiStreamWS();
 
-  // Startup Heartbeat Alert
-  await sendTelegramAlert(`🟢 <b>Binance Trader Online</b>\nMonitoring: ${SYMBOLS.map((s) => s.toUpperCase()).join(", ")}`);
+  app.listen(PORT, async () => {
+    console.log(`Terminal running on http://localhost:${PORT}`);
 
-  app.listen(PORT, () => console.log(`Terminal running on http://localhost:${PORT}`));
+    // Send Startup Alert after server port binds cleanly
+    const symbolsList = SYMBOLS.map((s) => s.toUpperCase()).join(", ");
+    await sendTelegramAlert(`🟢 <b>Binance Trader Online</b>\n\nMonitoring: <code>${symbolsList}</code>`);
+  });
 })();
