@@ -4,25 +4,38 @@ const express = require("express");
 const WebSocket = require("ws");
 const crypto = require("crypto");
 const { RSI, SMA } = require("technicalindicators");
-const sqlite3 = require("sqlite3");
-const { open } = require("sqlite");
+const initSqlJs = require("sql.js");
+const fs = require("fs");
 const path = require("path");
 
 const app = express();
 const PORT = process.env.APP_PORT || 3000;
 
-// Global DB Handle
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, "trades.db");
 let db;
 
-// Initialize Async SQLite Database
-async function initDatabase() {
-  const DB_PATH = process.env.DB_PATH || path.join(__dirname, "trades.db");
-  db = await open({
-    filename: DB_PATH,
-    driver: sqlite3.Database,
-  });
+// Save SQLite database state back to file
+function saveDatabase() {
+  if (!db) return;
+  const data = db.export();
+  const buffer = Buffer.from(data);
+  fs.writeFileSync(DB_PATH, buffer);
+}
 
-  await db.exec(`
+// Initialize sql.js Database
+async function initDatabase() {
+  const SQL = await initSqlJs();
+
+  if (fs.existsSync(DB_PATH)) {
+    const fileBuffer = fs.readFileSync(DB_PATH);
+    db = new SQL.Database(fileBuffer);
+    console.log("Loaded existing database from disk.");
+  } else {
+    db = new SQL.Database();
+    console.log("Created fresh SQLite database.");
+  }
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS trades (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       symbol TEXT NOT NULL,
@@ -34,7 +47,8 @@ async function initDatabase() {
       timestamp INTEGER NOT NULL
     )
   `);
-  console.log("Database initialized successfully.");
+
+  saveDatabase();
 }
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -160,7 +174,7 @@ function connectMultiStreamWS() {
         }
       }
     } catch (err) {
-      console.error("WS Message processing error:", err.message);
+      console.error("WS processing error:", err.message);
     }
   });
 
@@ -244,7 +258,7 @@ app.get("/api/holdings", async (req, res) => {
 });
 
 // 3. Trade History & PnL Analytics Endpoint
-app.get("/api/pnl", async (req, res) => {
+app.get("/api/pnl", (req, res) => {
   const timeframe = req.query.tf || "all";
   let timeFilter = 0;
   const now = Date.now();
@@ -254,7 +268,14 @@ app.get("/api/pnl", async (req, res) => {
   else if (timeframe === "month") timeFilter = now - 30 * 24 * 60 * 60 * 1000;
 
   try {
-    const trades = await db.all("SELECT * FROM trades WHERE timestamp >= ? ORDER BY timestamp ASC", [timeFilter]);
+    const stmt = db.prepare("SELECT * FROM trades WHERE timestamp >= :tf ORDER BY timestamp ASC");
+    stmt.bind({ ":tf": timeFilter });
+
+    const trades = [];
+    while (stmt.step()) {
+      trades.push(stmt.getAsObject());
+    }
+    stmt.free();
 
     const assetPnL = {};
     let totalRealizedUsdt = 0;
@@ -302,7 +323,7 @@ app.get("/api/pnl", async (req, res) => {
   }
 });
 
-// 4. Password Protected Trade Endpoint
+// 4. Password Protected Trade Endpoint with WASM SQLite Persistence
 app.post("/api/trade", express.json(), async (req, res) => {
   const { symbol, side, usdtAmount, password } = req.body;
 
@@ -338,7 +359,8 @@ app.post("/api/trade", express.json(), async (req, res) => {
       const executedPrice = parseFloat(result.fills?.[0]?.price || marketData[symbol.toUpperCase()]?.prices.slice(-1)[0] || 0);
       const executedQty = parseFloat(result.executedQty || tradeAmount / executedPrice);
 
-      await db.run(`INSERT INTO trades (symbol, side, price, qty, usdt_amount, order_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
+      // Insert and sync file disk state
+      db.run(`INSERT INTO trades (symbol, side, price, qty, usdt_amount, order_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
         symbol.toUpperCase(),
         side.toUpperCase(),
         executedPrice,
@@ -347,6 +369,7 @@ app.post("/api/trade", express.json(), async (req, res) => {
         String(result.orderId),
         timestamp,
       ]);
+      saveDatabase();
 
       sendTelegramAlert(
         `✅ <b>TRADE EXECUTED (${side.toUpperCase()})</b>\n\n` +
@@ -367,7 +390,6 @@ app.post("/api/trade", express.json(), async (req, res) => {
 
 app.use(express.static("public"));
 
-// Start server after Async DB & Bootstrap
 (async () => {
   await initDatabase();
   await bootstrapHistoricalData();
