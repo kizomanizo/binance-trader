@@ -2,18 +2,20 @@
 require("dotenv").config();
 const express = require("express");
 const WebSocket = require("ws");
-const { RSI, SMA } = require("technicalindicators");
 const crypto = require("crypto");
+const { RSI, SMA } = require("technicalindicators");
 
 const app = express();
 const PORT = process.env.APP_PORT || 3000;
 
-// Telegram Config
+// Telegram & Security Config
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const TRADE_PASSWORD = process.env.TRADE_PASSWORD || "admin123";
 
-// Multi-pair setup
-const SYMBOLS = ["btcusdt", "ethusdt", "solusdt", "dogeusdt"];
+// Load dynamic symbols from .env
+const SYMBOLS = (process.env.SYMBOLS || "btcusdt,ethusdt,solusdt,dogeusdt").split(",").map((s) => s.trim().toLowerCase());
+
 const INTERVAL = "1m";
 
 // Memory store for prices & volumes
@@ -48,13 +50,12 @@ async function sendTelegramAlert(message) {
   }
 }
 
-// Step 1: Pre-fill historical candle data via REST API
+// Pre-fill historical candle data via REST API
 async function bootstrapHistoricalData() {
-  console.log("Bootstrapping historical candle data...");
+  console.log(`Bootstrapping historical candle data for: ${SYMBOLS.map((s) => s.toUpperCase()).join(", ")}...`);
   for (const symbol of SYMBOLS) {
     const symUpper = symbol.toUpperCase();
     try {
-      // Use data-stream mirror host for REST or fallback
       const response = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${symUpper}&interval=${INTERVAL}&limit=50`);
       const klines = await response.json();
 
@@ -79,7 +80,7 @@ async function bootstrapHistoricalData() {
   }
 }
 
-// Step 2: Connect to Binance Combined WebSocket Stream
+// Connect to Binance Combined WebSocket Stream
 function connectMultiStreamWS() {
   const streamNames = SYMBOLS.map((s) => `${s}@kline_${INTERVAL}`).join("/");
   const wsUrl = `wss://data-stream.binance.com/stream?streams=${streamNames}`;
@@ -129,12 +130,10 @@ function connectMultiStreamWS() {
         }
         target.lastVolumeSurge = isVolumeSurge;
 
-        // Format RSI display safely
         const rsiDisplay = typeof target.lastRsi === "number" ? target.lastRsi.toFixed(2) : "Calculating...";
-
         console.log(`[${sym}] Close: $${closePrice} | RSI: ${rsiDisplay} | Vol Surge: ${isVolumeSurge ? "YES" : "No"}`);
 
-        // Check for Buy Signals (5-min cooldown)
+        // Check for Buy Signals (5-min cooldown per symbol)
         const now = Date.now();
         if (target.lastRsi !== null && now - target.lastSignalTime > 5 * 60 * 1000) {
           if (target.lastRsi <= 32 && isVolumeSurge) {
@@ -143,8 +142,7 @@ function connectMultiStreamWS() {
             const stopLoss = (entry * 0.992).toFixed(4);
 
             const msg =
-              `⚡ <b>HIGH PROBABILITY BUY SIGNAL</b>\n\n` +
-              `<b>Coin:</b> ${sym}\n` +
+              `⚡ <b>HIGH PROBABILITY BUY SIGNAL (${sym})</b>\n\n` +
               `<b>RSI:</b> ${target.lastRsi.toFixed(2)} (Oversold)\n` +
               `<b>Volume:</b> Surge Detected (>1.8x avg)\n` +
               `<b>Entry Price:</b> $${entry}\n\n` +
@@ -162,10 +160,7 @@ function connectMultiStreamWS() {
     }
   });
 
-  ws.on("error", (err) => {
-    console.error("WebSocket Error:", err.message);
-  });
-
+  ws.on("error", (err) => console.error("WebSocket Error:", err.message));
   ws.on("close", () => {
     console.warn("Multi-stream WS closed. Reconnecting in 3s...");
     setTimeout(connectMultiStreamWS, 3000);
@@ -180,21 +175,25 @@ app.get("/api/status", (req, res) => {
     return {
       symbol: sym,
       price: prices.length > 0 ? prices[prices.length - 1] : null,
-      history: prices.slice(-20), // Send the last 20 price points for instant charts
+      history: prices.slice(-20),
       rsi: typeof rsiVal === "number" ? parseFloat(rsiVal.toFixed(2)) : null,
       volSurge: marketData[sym].lastVolumeSurge,
     };
   });
 
-  res.json({
-    interval: INTERVAL,
-    markets: marketsList,
-  });
+  res.json({ interval: INTERVAL, markets: marketsList });
 });
 
-// Trade Execution Endpoint
+// Protected Trade Execution Endpoint
 app.post("/api/trade", express.json(), async (req, res) => {
-  const { symbol, side, usdtAmount } = req.body;
+  const { symbol, side, usdtAmount, password } = req.body;
+
+  // Validate Password
+  if (!password || password !== TRADE_PASSWORD) {
+    console.warn(`[UNAUTHORIZED ATTEMPT] Bad trading password provided for ${symbol}`);
+    return res.status(401).json({ success: false, error: "Unauthorized: Incorrect trading password." });
+  }
+
   const apiKey = process.env.BINANCE_API_KEY;
   const secretKey = process.env.BINANCE_SECRET_KEY;
 
@@ -204,9 +203,8 @@ app.post("/api/trade", express.json(), async (req, res) => {
 
   try {
     const timestamp = Date.now();
-    const tradeAmount = usdtAmount || process.env.DEFAULT_TRADE_AMOUNT_USDT || 5.0;
+    const tradeAmount = usdtAmount || 5.5;
 
-    // Construct signed query for Market Order using quoteOrderQty (USDT amount)
     const query = `symbol=${symbol.toUpperCase()}&side=${side.toUpperCase()}&type=MARKET&quoteOrderQty=${tradeAmount}&timestamp=${timestamp}`;
 
     const signature = crypto.createHmac("sha256", secretKey).update(query).digest("hex");
@@ -224,11 +222,10 @@ app.post("/api/trade", express.json(), async (req, res) => {
     if (result.orderId) {
       console.log(`[TRADE EXECUTED] ${side} ${symbol} ($${tradeAmount}) - OrderID: ${result.orderId}`);
 
-      // Notify Telegram on execution
       sendTelegramAlert(
-        `✅ <b>TRADE EXECUTED VIA APP</b>\n\n` +
+        `✅ <b>AUTHORIZED TRADE EXECUTED</b>\n\n` +
           `<b>Symbol:</b> ${symbol.toUpperCase()}\n` +
-          `<b>Type:</b> MARKET ${side}\n` +
+          `<b>Type:</b> MARKET ${side.toUpperCase()}\n` +
           `<b>Amount:</b> $${tradeAmount} USDT\n` +
           `<b>Order ID:</b> <code>${result.orderId}</code>`,
       );
@@ -246,7 +243,6 @@ app.post("/api/trade", express.json(), async (req, res) => {
 
 app.use(express.static("public"));
 
-// Start server after bootstrapping
 (async () => {
   await bootstrapHistoricalData();
   connectMultiStreamWS();
