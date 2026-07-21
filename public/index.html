@@ -3,106 +3,322 @@
 
 <head>
   <meta charset="UTF-8" />
-  <title>Multi-Pair Binance Scanner</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Binance Micro-Trader Scanner</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
+    :root {
+      --bg-dark: #0b0e11;
+      --card-bg: #1e2329;
+      --border-color: #2b313a;
+      --accent-yellow: #f0b90b;
+      --green-up: #0ecb81;
+      --red-down: #f6465d;
+      --text-muted: #848e9c;
+    }
+
     body {
-      font-family: system-ui, sans-serif;
-      background: #0b0e11;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg-dark);
       color: #eaecef;
+      margin: 0;
       padding: 2rem;
     }
 
-    h1 {
+    header {
       text-align: center;
-      margin-bottom: 2rem;
-      color: #f0b90b;
+      margin-bottom: 2.5rem;
+    }
+
+    h1 {
+      color: var(--accent-yellow);
+      margin: 0 0 0.5rem 0;
+      font-size: 2rem;
+    }
+
+    p.subtitle {
+      color: var(--text-muted);
+      margin: 0;
+      font-size: 0.95rem;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
     }
 
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 1rem;
-      max-width: 1000px;
-      margin: auto;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 2.5rem;
     }
 
     .card {
-      background: #1e2329;
-      border-radius: 8px;
+      background: var(--card-bg);
+      border-radius: 12px;
       padding: 1.25rem;
-      border: 1px solid #2b313a;
+      border: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: transform 0.2s ease, border-color 0.2s ease;
     }
 
-    .symbol {
-      font-size: 1.2rem;
-      font-weight: bold;
+    .card:hover {
+      border-color: #474d57;
+      transform: translateY(-2px);
+    }
+
+    .card-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
     }
 
+    .symbol {
+      font-size: 1.25rem;
+      font-weight: 700;
+    }
+
+    .badge-interval {
+      background: rgba(240, 185, 11, 0.15);
+      color: var(--accent-yellow);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
     .price {
       font-size: 1.8rem;
-      font-weight: bold;
-      color: #0ecb81;
+      font-weight: 700;
+      color: var(--green-up);
       margin: 0.5rem 0;
     }
 
-    .metric {
-      display: flex;
-      justify-content: space-between;
-      font-size: 0.9rem;
-      margin-top: 0.5rem;
-      color: #848e9c;
+    .chart-container {
+      height: 60px;
+      margin: 0.5rem 0 1rem 0;
     }
 
-    .metric span {
+    .metrics {
+      border-top: 1px solid var(--border-color);
+      padding-top: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .metric-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .rsi-val {
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .rsi-neutral {
       color: #eaecef;
     }
 
-    .badge {
-      background: #f0b90b;
-      color: #000;
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-size: 0.75rem;
-      font-weight: bold;
+    .rsi-oversold {
+      background: rgba(14, 203, 129, 0.2);
+      color: var(--green-up);
     }
 
-    .surge {
-      color: #0ecb81;
-      font-weight: bold;
+    .rsi-overbought {
+      background: rgba(246, 70, 93, 0.2);
+      color: var(--red-down);
+    }
+
+    .surge-yes {
+      color: var(--green-up);
+      font-weight: 700;
+    }
+
+    .trade-btn {
+      display: block;
+      text-align: center;
+      background: var(--accent-yellow);
+      color: #000;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.85rem;
+      padding: 0.5rem;
+      border-radius: 6px;
+      margin-top: 0.75rem;
+      transition: opacity 0.2s;
+    }
+
+    .trade-btn:hover {
+      opacity: 0.9;
+    }
+
+    /* Signals Log Section */
+    .logs-container {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 1.25rem;
+      border: 1px solid var(--border-color);
+    }
+
+    .logs-header {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .log-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--border-color);
+      font-size: 0.85rem;
+    }
+
+    .log-item:last-child {
+      border-bottom: none;
+    }
+
+    .empty-logs {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      font-style: italic;
     }
   </style>
 </head>
 
 <body>
-  <h1>Binance Micro-Trader Scanner</h1>
-  <div class="grid" id="market-grid"></div>
+  <div class="container">
+    <header>
+      <h1>Binance Micro-Trader Terminal</h1>
+      <p class="subtitle">Live 1-Minute Momentum & Surge Scanner</p>
+    </header>
+
+    <div class="grid" id="market-grid"></div>
+
+    <div class="logs-container">
+      <div class="logs-header">⚡ Recent Alerts Feed</div>
+      <div id="logs-list">
+        <div class="empty-logs">Listening for trade triggers... Signals will appear here when RSI dips ≤ 32 with high
+          volume.</div>
+      </div>
+    </div>
+  </div>
 
   <script>
+    const charts = {};
+
+    function initChart(symbol, ctx) {
+      return new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: Array(20).fill(''),
+          datasets: [{
+            data: [],
+            borderColor: '#0ecb81',
+            borderWidth: 1.5,
+            pointRadius: 0,
+            fill: false,
+            tension: 0.2
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false }, tooltip: { enabled: false } },
+          scales: {
+            x: { display: false },
+            y: { display: false }
+          }
+        }
+      });
+    }
+
     async function updateDashboard() {
       try {
         const res = await fetch('api/status');
         const data = await res.json();
         const grid = document.getElementById('market-grid');
-        grid.innerHTML = '';
 
         data.markets.forEach(m => {
-          const card = document.createElement('div');
-          card.className = 'card';
-          card.innerHTML = `
-            <div class="symbol">${m.symbol} <span class="badge">${data.interval}</span></div>
-            <div class="price">${m.price ? '$' + m.price : 'Loading...'}</div>
-            <div class="metric">RSI (14): <span>${m.rsi !== null ? m.rsi : '--'}</span></div>
-            <div class="metric">Vol Surge: <span class="${m.volSurge ? 'surge' : ''}">${m.volSurge ? 'YES ⚡' : 'No'}</span></div>
-          `;
-          grid.appendChild(card);
+          let card = document.getElementById(`card-${m.symbol}`);
+
+          // Build Card HTML if it doesn't exist
+          if (!card) {
+            card = document.createElement('div');
+            card.id = `card-${m.symbol}`;
+            card.className = 'card';
+            card.innerHTML = `
+              <div>
+                <div class="card-header">
+                  <span class="symbol">${m.symbol}</span>
+                  <span class="badge-interval">${data.interval}</span>
+                </div>
+                <div class="price" id="price-${m.symbol}">--</div>
+                <div class="chart-container">
+                  <canvas id="chart-${m.symbol}"></canvas>
+                </div>
+              </div>
+              <div class="metrics">
+                <div class="metric-row">
+                  <span>RSI (14):</span>
+                  <span class="rsi-val rsi-neutral" id="rsi-${m.symbol}">--</span>
+                </div>
+                <div class="metric-row">
+                  <span>Vol Surge:</span>
+                  <span id="surge-${m.symbol}">No</span>
+                </div>
+                <a href="https://www.binance.com/en/trade/${m.symbol}" target="_blank" class="trade-btn">Trade on Binance ↗</a>
+              </div>
+            `;
+            grid.appendChild(card);
+
+            // Initialize chart canvas
+            const ctx = document.getElementById(`chart-${m.symbol}`).getContext('2d');
+            charts[m.symbol] = initChart(m.symbol, ctx);
+          }
+
+          // Update Price
+          const priceEl = document.getElementById(`price-${m.symbol}`);
+          if (m.price) priceEl.innerText = '$' + m.price;
+
+          // Update RSI & Badge Styling
+          const rsiEl = document.getElementById(`rsi-${m.symbol}`);
+          if (m.rsi !== null) {
+            rsiEl.innerText = m.rsi;
+            rsiEl.className = 'rsi-val ' + (m.rsi <= 32 ? 'rsi-oversold' : m.rsi >= 70 ? 'rsi-overbought' : 'rsi-neutral');
+          } else {
+            rsiEl.innerText = 'Calculating...';
+          }
+
+          // Update Volume Surge
+          const surgeEl = document.getElementById(`surge-${m.symbol}`);
+          surgeEl.innerText = m.volSurge ? 'YES ⚡' : 'No';
+          surgeEl.className = m.volSurge ? 'surge-yes' : '';
+
+          // Push price data to mini chart
+          if (m.price && charts[m.symbol]) {
+            const chartData = charts[m.symbol].data.datasets[0].data;
+            chartData.push(m.price);
+            if (chartData.length > 20) chartData.shift();
+            charts[m.symbol].update('none'); // smooth render without animation lag
+          }
         });
       } catch (err) {
-        console.error(err);
+        console.error('Error fetching status:', err);
       }
     }
+
     setInterval(updateDashboard, 2000);
     updateDashboard();
   </script>
