@@ -10,22 +10,27 @@ const app = express();
 const PORT = process.env.APP_PORT || 3000;
 
 // Database Setup
-const DB_PATH = process.env.DB_PATH || "trades.db";
-const db = new Database(DB_PATH);
+const sqlite3 = require("sqlite3").verbose();
+const path = require("path");
 
-// Initialize DB Table for Trade Logging
-db.exec(`
-  CREATE TABLE IF NOT EXISTS trades (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    symbol TEXT NOT NULL,
-    side TEXT NOT NULL,
-    price REAL NOT NULL,
-    qty REAL NOT NULL,
-    usdt_amount REAL NOT NULL,
-    order_id TEXT NOT NULL,
-    timestamp INTEGER NOT NULL
-  )
-`);
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, "trades.db");
+const db = new sqlite3.Database(DB_PATH);
+
+// Create Table
+db.serialize(() => {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS trades (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol TEXT NOT NULL,
+      side TEXT NOT NULL,
+      price REAL NOT NULL,
+      qty REAL NOT NULL,
+      usdt_amount REAL NOT NULL,
+      order_id TEXT NOT NULL,
+      timestamp INTEGER NOT NULL
+    )
+  `);
+});
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
