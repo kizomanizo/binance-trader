@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Binance Micro-Trader Scanner</title>
+  <title>Binance Micro-Trader Terminal</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     :root {
@@ -142,24 +142,42 @@
       font-weight: 700;
     }
 
-    .trade-btn {
-      display: block;
-      text-align: center;
-      background: var(--accent-yellow);
-      color: #000;
-      text-decoration: none;
-      font-weight: 600;
-      font-size: 0.85rem;
-      padding: 0.5rem;
-      border-radius: 6px;
+    /* Action Buttons Area */
+    .btn-group {
+      display: flex;
+      gap: 0.5rem;
       margin-top: 0.75rem;
-      transition: opacity 0.2s;
-      cursor: pointer;
-      border: none;
     }
 
-    .trade-btn:hover {
-      opacity: 0.9;
+    .btn-buy {
+      flex: 1;
+      background: var(--green-up);
+      color: #000;
+      border: none;
+      font-weight: 700;
+      font-size: 0.85rem;
+      padding: 0.6rem;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+
+    .btn-sell {
+      flex: 1;
+      background: var(--red-down);
+      color: #fff;
+      border: none;
+      font-weight: 700;
+      font-size: 0.85rem;
+      padding: 0.6rem;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+
+    .btn-buy:hover,
+    .btn-sell:hover {
+      opacity: 0.85;
     }
 
     /* Signals Log Section */
@@ -182,13 +200,13 @@
     .log-item {
       display: flex;
       justify-content: space-between;
-      padding: 0.75rem 0;
-      border-bottom: 1px solid var(--border-color);
+      align-items: center;
+      padding: 0.75rem;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      margin-bottom: 0.75rem;
       font-size: 0.85rem;
-    }
-
-    .log-item:last-child {
-      border-bottom: none;
     }
 
     .empty-logs {
@@ -212,7 +230,7 @@
     .toast {
       background: var(--card-bg);
       border: 1px solid var(--border-color);
-      border-left: 4px solid #0ecb81;
+      border-left: 4px solid var(--green-up);
       border-radius: 8px;
       padding: 1rem 1.25rem;
       min-width: 300px;
@@ -275,10 +293,6 @@
       flex-shrink: 0;
     }
 
-    .toast-close:hover {
-      color: #eaecef;
-    }
-
     @keyframes slideIn {
       from {
         transform: translateX(400px);
@@ -289,22 +303,6 @@
         transform: translateX(0);
         opacity: 1;
       }
-    }
-
-    @keyframes slideOut {
-      from {
-        transform: translateX(0);
-        opacity: 1;
-      }
-
-      to {
-        transform: translateX(400px);
-        opacity: 0;
-      }
-    }
-
-    .toast.removing {
-      animation: slideOut 0.3s ease-in;
     }
 
     /* Confirmation Modal */
@@ -404,10 +402,8 @@
     </div>
   </div>
 
-  <!-- Toast Container -->
   <div class="toast-container" id="toast-container"></div>
 
-  <!-- Confirmation Modal -->
   <div class="modal-overlay" id="confirmModal">
     <div class="modal">
       <div class="modal-title" id="modalTitle">Confirm Action</div>
@@ -421,7 +417,6 @@
 
   <script>
     const charts = {};
-    let confirmResolve = null;
 
     // Toast Notification System
     function showToast(title, message, type = 'info', duration = 4000) {
@@ -429,12 +424,7 @@
       const toast = document.createElement('div');
       toast.className = `toast ${type}`;
 
-      const icons = {
-        success: '✓',
-        error: '✕',
-        warning: '⚠',
-        info: 'ℹ'
-      };
+      const icons = { success: '✓', error: '✕', warning: '⚠', info: 'ℹ' };
 
       toast.innerHTML = `
         <span class="toast-icon">${icons[type]}</span>
@@ -446,64 +436,30 @@
       `;
 
       container.appendChild(toast);
-
-      const closeBtn = toast.querySelector('.toast-close');
-      closeBtn.addEventListener('click', () => removeToast(toast));
-
-      if (duration > 0) {
-        setTimeout(() => removeToast(toast), duration);
-      }
-
-      return toast;
-    }
-
-    function removeToast(toast) {
-      toast.classList.add('removing');
-      setTimeout(() => toast.remove(), 300);
+      toast.querySelector('.toast-close').addEventListener('click', () => toast.remove());
+      if (duration > 0) setTimeout(() => toast.remove(), duration);
     }
 
     // Confirmation Modal
     function showConfirmation(title, message) {
       return new Promise((resolve) => {
-        confirmResolve = resolve;
         const modal = document.getElementById('confirmModal');
-        const modalTitle = document.getElementById('modalTitle');
-        const modalText = document.getElementById('modalText');
         const confirmBtn = document.getElementById('modalConfirm');
         const cancelBtn = document.getElementById('modalCancel');
 
-        modalTitle.textContent = title;
-        modalText.textContent = message;
+        document.getElementById('modalTitle').textContent = title;
+        document.getElementById('modalText').textContent = message;
 
-        const handleConfirm = () => {
-          modal.classList.remove('active');
-          resolve(true);
-          confirmResolve = null;
-          cleanup();
-        };
-
-        const handleCancel = () => {
-          modal.classList.remove('active');
-          resolve(false);
-          confirmResolve = null;
-          cleanup();
-        };
+        const handleConfirm = () => { modal.classList.remove('active'); resolve(true); cleanup(); };
+        const handleCancel = () => { modal.classList.remove('active'); resolve(false); cleanup(); };
 
         const cleanup = () => {
           confirmBtn.removeEventListener('click', handleConfirm);
           cancelBtn.removeEventListener('click', handleCancel);
-          document.removeEventListener('keydown', handleKeydown);
-        };
-
-        const handleKeydown = (e) => {
-          if (e.key === 'Enter') handleConfirm();
-          if (e.key === 'Escape') handleCancel();
         };
 
         confirmBtn.addEventListener('click', handleConfirm);
         cancelBtn.addEventListener('click', handleCancel);
-        document.addEventListener('keydown', handleKeydown);
-
         modal.classList.add('active');
       });
     }
@@ -526,10 +482,7 @@
           responsive: true,
           maintainAspectRatio: false,
           plugins: { legend: { display: false }, tooltip: { enabled: false } },
-          scales: {
-            x: { display: false },
-            y: { display: false }
-          }
+          scales: { x: { display: false }, y: { display: false } }
         }
       });
     }
@@ -539,19 +492,17 @@
         const res = await fetch('api/status');
         const data = await res.json();
         const grid = document.getElementById('market-grid');
-        if (!data.markets) {
-          showToast('Error', 'Invalid response from server', 'error', 3000);
-          return;
-        }
+
+        if (!data.markets) return;
 
         data.markets.forEach(m => {
           if (m.history && charts[m.symbol]) {
             charts[m.symbol].data.datasets[0].data = m.history;
             charts[m.symbol].update('none');
           }
+
           let card = document.getElementById(`card-${m.symbol}`);
 
-          // Build Card HTML if it doesn't exist
           if (!card) {
             card = document.createElement('div');
             card.id = `card-${m.symbol}`;
@@ -576,23 +527,24 @@
                   <span>Vol Surge:</span>
                   <span id="surge-${m.symbol}">No</span>
                 </div>
-                <button onclick="executeInAppTrade('${m.symbol}', 'BUY', 5.00)" class="trade-btn">
-                  ⚡ Buy $5 ${m.symbol}
-                </button>
+                <div class="btn-group">
+                  <button onclick="executeInAppTrade('${m.symbol}', 'BUY', 5.50)" class="btn-buy">
+                    BUY $5.50
+                  </button>
+                  <button onclick="executeInAppTrade('${m.symbol}', 'SELL', 5.50)" class="btn-sell">
+                    SELL
+                  </button>
+                </div>
               </div>
             `;
             grid.appendChild(card);
 
-            // Initialize chart canvas
             const ctx = document.getElementById(`chart-${m.symbol}`).getContext('2d');
             charts[m.symbol] = initChart(m.symbol, ctx);
           }
 
-          // Update Price
-          const priceEl = document.getElementById(`price-${m.symbol}`);
-          if (m.price) priceEl.innerText = '$' + m.price;
+          document.getElementById(`price-${m.symbol}`).innerText = m.price ? '$' + m.price : '--';
 
-          // Update RSI & Badge Styling
           const rsiEl = document.getElementById(`rsi-${m.symbol}`);
           if (m.rsi !== null) {
             rsiEl.innerText = m.rsi;
@@ -601,36 +553,23 @@
             rsiEl.innerText = 'Calculating...';
           }
 
-          // Update Volume Surge
           const surgeEl = document.getElementById(`surge-${m.symbol}`);
           surgeEl.innerText = m.volSurge ? 'YES ⚡' : 'No';
           surgeEl.className = m.volSurge ? 'surge-yes' : '';
-
-          // Push price data to mini chart
-          if (m.price && charts[m.symbol]) {
-            const chartData = charts[m.symbol].data.datasets[0].data;
-            chartData.push(m.price);
-            if (chartData.length > 20) chartData.shift();
-            charts[m.symbol].update('none'); // smooth render without animation lag
-          }
         });
       } catch (err) {
         console.error('Error fetching status:', err);
-        showToast('Connection Error', 'Failed to update market data', 'error', 3000);
       }
     }
 
     async function executeInAppTrade(symbol, side, amount) {
-      const confirmTitle = `Execute Trade Order`;
-      const confirmMessage = `Buy $${amount} worth of ${symbol.toUpperCase()}?\n\nThis will execute a MARKET order immediately.`;
+      const confirmTitle = `Execute ${side} Order`;
+      const confirmMessage = `Execute a MARKET ${side} order for $${amount} USDT worth of ${symbol.toUpperCase()}?`;
 
       const confirmed = await showConfirmation(confirmTitle, confirmMessage);
-      if (!confirmed) {
-        showToast('Cancelled', 'Trade order cancelled', 'info', 2000);
-        return;
-      }
+      if (!confirmed) return;
 
-      showToast('Processing', 'Executing trade order...', 'info', 0);
+      showToast('Processing', `Sending ${side} order to Binance...`, 'info', 0);
 
       try {
         const res = await fetch('api/trade', {
@@ -641,12 +580,12 @@
 
         const data = await res.json();
         if (data.success) {
-          showToast('✓ Success', `Order executed! Order ID: ${data.orderId}`, 'success', 5000);
+          showToast('✓ Order Placed', `${side} ${symbol.toUpperCase()} successful! Order ID: ${data.orderId}`, 'success', 5000);
         } else {
-          showToast('Trade Failed', data.error || 'Unknown error occurred', 'error', 4000);
+          showToast('Trade Failed', data.error || 'Unknown error occurred', 'error', 5000);
         }
       } catch (err) {
-        showToast('Execution Error', err.message, 'error', 4000);
+        showToast('Execution Error', err.message, 'error', 5000);
       }
     }
 
