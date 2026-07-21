@@ -417,7 +417,7 @@ app.use(express.static("public"));
   connectMultiStreamWS();
 
   // Startup Heartbeat Alert
-  sendTelegramAlert(`🟢 <b>Binance Trader Online</b>\nMonitoring: ${SYMBOLS.map((s) => s.toUpperCase()).join(", ")}`);
+  await sendTelegramAlert(`🟢 <b>Binance Trader Online</b>\nMonitoring: ${SYMBOLS.map((s) => s.toUpperCase()).join(", ")}`);
 
   app.listen(PORT, () => console.log(`Terminal running on http://localhost:${PORT}`));
 })();
