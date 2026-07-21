@@ -179,6 +179,7 @@ app.get("/api/status", (req, res) => {
     return {
       symbol: sym,
       price: prices.length > 0 ? prices[prices.length - 1] : null,
+      history: prices.slice(-20), // Send the last 20 price points for instant charts
       rsi: typeof rsiVal === "number" ? parseFloat(rsiVal.toFixed(2)) : null,
       volSurge: marketData[sym].lastVolumeSurge,
     };

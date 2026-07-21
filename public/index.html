@@ -251,6 +251,10 @@
         const grid = document.getElementById('market-grid');
 
         data.markets.forEach(m => {
+          if (m.history && charts[m.symbol]) {
+            charts[m.symbol].data.datasets[0].data = m.history;
+            charts[m.symbol].update('none');
+          }
           let card = document.getElementById(`card-${m.symbol}`);
 
           // Build Card HTML if it doesn't exist
