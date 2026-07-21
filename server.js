@@ -4,13 +4,12 @@ const express = require("express");
 const WebSocket = require("ws");
 const crypto = require("crypto");
 const { RSI, SMA } = require("technicalindicators");
-const Database = require("better-sqlite3");
+const sqlite3 = require("sqlite3").verbose();
 
 const app = express();
 const PORT = process.env.APP_PORT || 3000;
 
 // Database Setup
-const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, "trades.db");
