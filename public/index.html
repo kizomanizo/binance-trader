@@ -686,19 +686,20 @@
     let persistedAlerts = [];
     let tradeOutcomes = [];
 
-    // Toast Notification System
+    // Return the created toast element so caller can manually dismiss it
     function showToast(title, message, type = 'info', duration = 4000) {
       const container = document.getElementById('toast-container');
       const toast = document.createElement('div');
       toast.className = `toast ${type}`;
       toast.innerHTML = `
-        <div>
-          <div style="font-weight:700; font-size:0.85rem;">${title}</div>
-          <div style="font-size:0.8rem; color:var(--text-muted); margin-top:2px;">${message}</div>
-        </div>
-      `;
+    <div>
+      <div style="font-weight:700; font-size:0.85rem;">${title}</div>
+      <div style="font-size:0.8rem; color:var(--text-muted); margin-top:2px;">${message}</div>
+    </div>
+  `;
       container.appendChild(toast);
       if (duration > 0) setTimeout(() => toast.remove(), duration);
+      return toast;
     }
 
     async function fetchHoldings() {
@@ -1153,7 +1154,8 @@
         btn.innerText = 'Executing...';
       }
 
-      showToast('Processing', `Sending ${side} order for ${symbol}...`, 'info', 0);
+      // Save reference to processing toast
+      const processingToast = showToast('Processing', `Sending ${side} order for ${symbol}...`, 'info', 0);
 
       try {
         const res = await fetch('api/trade', {
@@ -1163,6 +1165,9 @@
         });
 
         const data = await res.json();
+
+        // Immediately remove processing toast upon response
+        if (processingToast) processingToast.remove();
 
         const outcomeEntry = {
           id: `${Date.now()}_${symbol}_${side}_${Math.random().toString(36).slice(2, 6)}`,
@@ -1206,6 +1211,7 @@
           }
         }
       } catch (err) {
+        if (processingToast) processingToast.remove();
         showToast('Execution Error', err.message, 'error', 4000);
         addTradeOutcome({
           id: `${Date.now()}_${symbol}_${side}_${Math.random().toString(36).slice(2, 6)}`,
