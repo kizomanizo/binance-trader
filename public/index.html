@@ -299,6 +299,91 @@
       margin-left: 0.5rem;
     }
 
+    .logs-pager {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 0.75rem;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .logs-pager button {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: #eaecef;
+      padding: 0.5rem 0.85rem;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.2s ease, border-color 0.2s ease;
+    }
+
+    .logs-pager button:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: #6a7380;
+    }
+
+    .logs-pager button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .logs-pager .page-info {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
+    .outcomes-container {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 1.25rem;
+      border: 1px solid var(--border-color);
+      margin-top: 1rem;
+    }
+
+    .outcome-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .outcome-table th,
+    .outcome-table td {
+      text-align: left;
+      padding: 0.75rem 0.8rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+      font-size: 0.84rem;
+    }
+
+    .outcome-table th {
+      color: var(--text-muted);
+      font-weight: 700;
+      font-size: 0.78rem;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .outcome-status.status-success {
+      color: var(--green-up);
+      font-weight: 700;
+    }
+
+    .outcome-status.status-failed {
+      color: var(--red-down);
+      font-weight: 700;
+    }
+
+    .trade-success {
+      background: rgba(14, 203, 129, 0.04);
+    }
+
+    .trade-failed {
+      background: rgba(246, 70, 93, 0.04);
+    }
+
+    .outcome-table tbody tr:last-child td {
+      border-bottom: none;
+    }
+
     /* Modal */
     .modal-overlay {
       display: none;
@@ -450,6 +535,37 @@
           position ≥ $5.00.
         </div>
       </div>
+      <div class="logs-pager" id="logs-pager" style="display:none;">
+        <button id="pager-prev" onclick="changeAlertPage(-1)">← Previous</button>
+        <div class="page-info" id="page-info">Page 1 of 1</div>
+        <button id="pager-next" onclick="changeAlertPage(1)">Next →</button>
+      </div>
+    </div>
+
+    <div class="outcomes-container">
+      <div style="font-weight:700; margin-bottom:0.75rem;">💾 Trade Outcome Ledger</div>
+      <div style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+        Persisted buy/sell actions with success and failure outcomes. A tiny ledger for the trade nerd in all of us.
+      </div>
+      <table class="outcome-table">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Action</th>
+            <th>Symbol</th>
+            <th>Amount</th>
+            <th>Status</th>
+            <th>Outcome</th>
+          </tr>
+        </thead>
+        <tbody id="outcomes-body">
+          <tr>
+            <td colspan="6" style="color:var(--text-muted); font-style:italic; padding:1rem 0;">
+              No trade outcomes yet. Execute a BUY or SELL to populate the ledger.
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
@@ -478,6 +594,13 @@
     const charts = {};
     let isManualUnlocked = false;
     const activeAlerts = new Map();
+    const alertStorageKey = 'strategyAlerts';
+    const outcomeStorageKey = 'tradeOutcomeLedger';
+    const alertsPerPage = 5;
+    const outcomeLimit = 12;
+    let currentAlertPage = 1;
+    let persistedAlerts = [];
+    let tradeOutcomes = [];
 
     // Toast Helper
     function showToast(title, message, type = 'info', duration = 4000) {
@@ -567,11 +690,136 @@
       return `${localStr} <span style="color:var(--accent-yellow);">(${agoStr})</span>`;
     }
 
+    function loadPersistedAlerts() {
+      try {
+        const raw = localStorage.getItem(alertStorageKey);
+        persistedAlerts = raw ? JSON.parse(raw) : [];
+        activeAlerts.clear();
+        persistedAlerts.forEach(alert => activeAlerts.set(alert.id, alert.createdTime));
+      } catch (err) {
+        persistedAlerts = [];
+        activeAlerts.clear();
+      }
+    }
+
+    function savePersistedAlerts() {
+      localStorage.setItem(alertStorageKey, JSON.stringify(persistedAlerts));
+    }
+
+    function loadTradeOutcomes() {
+      try {
+        const raw = localStorage.getItem(outcomeStorageKey);
+        tradeOutcomes = raw ? JSON.parse(raw) : [];
+      } catch (err) {
+        tradeOutcomes = [];
+      }
+    }
+
+    function saveTradeOutcomes() {
+      localStorage.setItem(outcomeStorageKey, JSON.stringify(tradeOutcomes));
+    }
+
+    function addTradeOutcome(entry) {
+      tradeOutcomes.unshift(entry);
+      tradeOutcomes = tradeOutcomes.slice(0, outcomeLimit);
+      saveTradeOutcomes();
+      renderTradeOutcomes();
+    }
+
+    function renderTradeOutcomes() {
+      const tbody = document.getElementById('outcomes-body');
+      if (!tbody) return;
+
+      if (tradeOutcomes.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="6" style="color:var(--text-muted); font-style:italic; padding:1rem 0;">
+              No trade outcomes yet. Execute a BUY or SELL to populate the ledger.
+            </td>
+          </tr>
+        `;
+        return;
+      }
+
+      tbody.innerHTML = tradeOutcomes
+        .map(o => `
+          <tr class="${o.status === 'SUCCESS' ? 'trade-success' : 'trade-failed'}">
+            <td>${new Date(o.timestamp).toLocaleTimeString()}</td>
+            <td>${o.side}</td>
+            <td>${o.symbol}</td>
+            <td>$${o.amount.toFixed(2)}</td>
+            <td class="outcome-status ${o.status === 'SUCCESS' ? 'status-success' : 'status-failed'}">
+              ${o.status}
+            </td>
+            <td>${o.outcome}</td>
+          </tr>
+        `)
+        .join('');
+    }
+
     function refreshAlertDurations() {
       activeAlerts.forEach((timestamp, elemId) => {
         const badge = document.getElementById(`time-${elemId}`);
         if (badge) badge.innerHTML = formatAlertTime(timestamp);
       });
+    }
+
+    function renderAlertPage(page = 1) {
+      const logsList = document.getElementById('logs-list');
+      const pager = document.getElementById('logs-pager');
+      const pageInfo = document.getElementById('page-info');
+      const prevBtn = document.getElementById('pager-prev');
+      const nextBtn = document.getElementById('pager-next');
+
+      if (!logsList || !pager || !pageInfo || !prevBtn || !nextBtn) return;
+
+      currentAlertPage = Math.max(1, Math.min(page, Math.ceil(persistedAlerts.length / alertsPerPage) || 1));
+      const start = (currentAlertPage - 1) * alertsPerPage;
+      const pageAlerts = persistedAlerts.slice(start, start + alertsPerPage);
+
+      logsList.innerHTML = '';
+      if (pageAlerts.length === 0) {
+        logsList.innerHTML = `
+          <div class="empty-logs" style="color:var(--text-muted); font-size:0.85rem; font-style:italic;">
+            Listening for triggers... Alerts will show BUY signals when USDT ≥ $5.50 and SELL signals when holding position ≥ $5.00.
+          </div>
+        `;
+        pager.style.display = 'none';
+        return;
+      }
+
+      pageAlerts.forEach(alert => {
+        const item = document.createElement('div');
+        item.className = `log-item ${alert.action === 'BUY' ? 'buy-alert' : 'sell-alert'}`;
+        item.innerHTML = `
+          <div>
+            <div style="font-weight:700; color:${alert.action === 'BUY' ? 'var(--green-up)' : 'var(--red-down)'};">
+              ${alert.action === 'BUY' ? '⚡ BUY SIGNAL' : '🚨 SELL SIGNAL'}: ${alert.symbol}
+              <span class="timestamp-badge" id="time-${alert.id}">${formatAlertTime(alert.createdTime)}</span>
+            </div>
+            <div style="color:var(--text-muted); margin-top:0.25rem;">
+              Price: <b>$${alert.price}</b> | RSI: <b>${alert.rsi}</b>
+            </div>
+          </div>
+          <div>
+            ${alert.action === 'BUY'
+            ? `<button onclick="executeInAppTrade('${alert.symbol}', 'BUY', 5.50, '${alert.id}')" class="btn-buy" style="padding:0.4rem 0.8rem;">BUY $5.50</button>`
+            : `<button onclick="executeInAppTrade('${alert.symbol}', 'SELL', 5.50, '${alert.id}')" class="btn-sell" style="padding:0.4rem 0.8rem;">SELL NOW</button>`
+          }
+          </div>
+        `;
+        logsList.appendChild(item);
+      });
+
+      const totalPages = Math.ceil(persistedAlerts.length / alertsPerPage) || 1;
+      pageInfo.textContent = `Page ${currentAlertPage} of ${totalPages}`;
+      prevBtn.disabled = currentAlertPage === 1;
+      nextBtn.disabled = currentAlertPage === totalPages;
+      pager.style.display = totalPages > 1 ? 'flex' : 'none';
+    }
+
+    function changeAlertPage(delta) {
+      renderAlertPage(currentAlertPage + delta);
     }
 
     function renderAlertCard(symbol, price, rsi, action) {
@@ -581,33 +829,21 @@
       const createdTime = Date.now();
       activeAlerts.set(alertId, createdTime);
 
-      const logsList = document.getElementById('logs-list');
-      const emptyMsg = logsList.querySelector('.empty-logs');
-      if (emptyMsg) emptyMsg.remove();
+      const alert = {
+        id: alertId,
+        symbol,
+        price,
+        rsi,
+        action,
+        createdTime
+      };
 
-      const item = document.createElement('div');
-      const isBuy = action === 'BUY';
-      item.className = `log-item ${isBuy ? 'buy-alert' : 'sell-alert'}`;
+      // Persist most recent alerts, but keep only the last 20
+      persistedAlerts.unshift(alert);
+      persistedAlerts = persistedAlerts.slice(0, 20);
+      savePersistedAlerts();
 
-      item.innerHTML = `
-        <div>
-          <div style="font-weight:700; color:${isBuy ? 'var(--green-up)' : 'var(--red-down)'};">
-            ${isBuy ? '⚡ BUY SIGNAL' : '🚨 SELL SIGNAL'}: ${symbol}
-            <span class="timestamp-badge" id="time-${alertId}">${formatAlertTime(createdTime)}</span>
-          </div>
-          <div style="color:var(--text-muted); margin-top:0.25rem;">
-            Price: <b>$${price}</b> | RSI: <b>${rsi}</b>
-          </div>
-        </div>
-        <div>
-          ${isBuy
-          ? `<button onclick="executeInAppTrade('${symbol}', 'BUY', 5.50)" class="btn-buy" style="padding:0.4rem 0.8rem;">BUY $5.50</button>`
-          : `<button onclick="executeInAppTrade('${symbol}', 'SELL', 5.50)" class="btn-sell" style="padding:0.4rem 0.8rem;">SELL NOW</button>`
-        }
-        </div>
-      `;
-
-      logsList.prepend(item);
+      renderAlertPage(currentAlertPage);
     }
 
     async function toggleManualUnlock() {
@@ -844,8 +1080,21 @@
 
         const data = await res.json();
 
+        const outcomeEntry = {
+          id: `${Date.now()}_${symbol}_${side}_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: Date.now(),
+          symbol,
+          side,
+          amount,
+          status: data.success ? 'SUCCESS' : 'FAILED',
+          outcome: data.success ? `Order #${data.orderId}` : (data.error || 'Unknown failure'),
+          orderId: data.orderId || null,
+          alertId,
+        };
+
         if (data.success) {
           showToast('✓ Order Executed', `${side} ${symbol.toUpperCase()} successful! Order ID: ${data.orderId}`, 'success', 5000);
+          addTradeOutcome(outcomeEntry);
 
           // 2. Mark Alert Card as EXECUTED in the UI
           if (alertId) {
@@ -868,6 +1117,7 @@
           }
         } else {
           showToast('Trade Failed', data.error || 'Unknown error', 'error', 4000);
+          addTradeOutcome(outcomeEntry);
           // Restore button state on failure
           if (btn) {
             btn.disabled = false;
@@ -876,6 +1126,17 @@
         }
       } catch (err) {
         showToast('Execution Error', err.message, 'error', 4000);
+        addTradeOutcome({
+          id: `${Date.now()}_${symbol}_${side}_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: Date.now(),
+          symbol,
+          side,
+          amount,
+          status: 'ERROR',
+          outcome: err.message || 'Network error',
+          orderId: null,
+          alertId,
+        });
         if (btn) {
           btn.disabled = false;
           btn.innerText = originalText;
@@ -885,6 +1146,10 @@
 
     setInterval(updateDashboard, 2000);
     setInterval(refreshAlertDurations, 1000);
+    loadPersistedAlerts();
+    loadTradeOutcomes();
+    renderAlertPage(1);
+    renderTradeOutcomes();
     updateDashboard();
     fetchHoldings();
     fetchPnL();
