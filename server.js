@@ -17,6 +17,15 @@ let db;
 // Memory store for user's active Binance spot balances
 const availableBalances = { USDT: 0 };
 
+// Default Strategy Config (fallback if database is empty)
+let config = {
+  rsiOversold: 32,
+  rsiOverbought: 70,
+  volumeSurgeMultiplier: 1.8,
+  tradeAmountUsdt: 5.5,
+  cooldownMinutes: 5,
+};
+
 function saveDatabase() {
   if (!db) return;
   const data = db.export();
@@ -34,6 +43,7 @@ async function initDatabase() {
     console.log("Created fresh SQLite database.");
   }
 
+  // Trades table
   db.run(`
     CREATE TABLE IF NOT EXISTS trades (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,6 +57,36 @@ async function initDatabase() {
     )
   `);
 
+  // Settings table for dynamic UI configuration
+  db.run(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `);
+
+  loadSettingsFromDb();
+  saveDatabase();
+}
+
+function loadSettingsFromDb() {
+  try {
+    const stmt = db.prepare("SELECT key, value FROM settings");
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      if (row.key in config) {
+        config[row.key] = parseFloat(row.value);
+      }
+    }
+    stmt.free();
+    console.log("Loaded strategy config from DB:", config);
+  } catch (err) {
+    console.error("Error loading settings from DB:", err.message);
+  }
+}
+
+function saveSettingToDb(key, value) {
+  db.run(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`, [key, String(value)]);
   saveDatabase();
 }
 
@@ -55,7 +95,6 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const TRADE_PASSWORD = process.env.TRADE_PASSWORD || "admin123";
 
 const SYMBOLS = (process.env.SYMBOLS || "btcusdt,ethusdt,solusdt,dogeusdt,xrpusdt").split(",").map((s) => s.trim().toLowerCase());
-
 const INTERVAL = "1m";
 
 const marketData = {};
@@ -71,7 +110,7 @@ SYMBOLS.forEach((sym) => {
 
 async function sendTelegramAlert(message) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-    console.warn("[TELEGRAM SKIPPED] Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID in .env");
+    console.warn("[TELEGRAM SKIPPED] Missing token or chat ID.");
     return;
   }
 
@@ -90,15 +129,12 @@ async function sendTelegramAlert(message) {
     const data = await res.json();
     if (!res.ok || !data.ok) {
       console.error("[TELEGRAM API REJECTED]", data);
-    } else {
-      console.log(`[TELEGRAM SENT SUCCESS] Message ID: ${data.result.message_id}`);
     }
   } catch (err) {
     console.error("Telegram Network Error:", err.message);
   }
 }
 
-// Background sync to keep local balances updated for signal validation
 async function updateAccountBalances() {
   const apiKey = process.env.BINANCE_API_KEY;
   const secretKey = process.env.BINANCE_SECRET_KEY;
@@ -193,27 +229,29 @@ function connectMultiStreamWS() {
           const volSmaValues = SMA.calculate({ values: target.volumes, period: 20 });
           if (volSmaValues && volSmaValues.length > 0) {
             const avgVolume = volSmaValues[volSmaValues.length - 1];
-            isVolumeSurge = volume > avgVolume * 1.8;
+            isVolumeSurge = volume > avgVolume * config.volumeSurgeMultiplier;
           }
         }
         target.lastVolumeSurge = isVolumeSurge;
 
         const now = Date.now();
-        if (target.lastRsi !== null && now - target.lastSignalTime > 5 * 60 * 1000) {
+        const cooldownMs = config.cooldownMinutes * 60 * 1000;
+
+        if (target.lastRsi !== null && now - target.lastSignalTime > cooldownMs) {
           const baseAsset = sym.replace("USDT", "");
           const currentAssetBalance = availableBalances[baseAsset] || 0;
           const currentAssetUsdVal = currentAssetBalance * closePrice;
           const usdtBalance = availableBalances["USDT"] || 0;
 
-          // 1. CONDITIONAL BUY SIGNAL: RSI <= 32 AND Vol Surge AND Free USDT >= $5.50
-          if (target.lastRsi <= 32 && isVolumeSurge && usdtBalance >= 5.5) {
+          // 1. DYNAMIC BUY SIGNAL EVALUATION
+          if (target.lastRsi <= config.rsiOversold && isVolumeSurge && usdtBalance >= config.tradeAmountUsdt) {
             sendTelegramAlert(
               `⚡ <b>BUY SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Available Cash:</b> $${usdtBalance.toFixed(2)} USDT`,
             );
             target.lastSignalTime = now;
           }
-          // 2. CONDITIONAL SELL SIGNAL: RSI >= 70 AND Asset Holding Value >= $5.00
-          else if (target.lastRsi >= 70 && currentAssetUsdVal >= 5.0) {
+          // 2. DYNAMIC SELL SIGNAL EVALUATION
+          else if (target.lastRsi >= config.rsiOverbought && currentAssetUsdVal >= 5.0) {
             sendTelegramAlert(
               `🚨 <b>SELL SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Holding Value:</b> $${currentAssetUsdVal.toFixed(2)} USD`,
             );
@@ -230,7 +268,32 @@ function connectMultiStreamWS() {
   ws.on("close", () => setTimeout(connectMultiStreamWS, 3000));
 }
 
-// Dashboard Status Endpoint with Balance Indicators for UI
+// Get/Update Settings Endpoints
+app.get("/api/settings", (req, res) => {
+  res.json({ success: true, config });
+});
+
+app.post("/api/settings", express.json(), (req, res) => {
+  const { password, settings } = req.body;
+
+  if (!password || password !== TRADE_PASSWORD) {
+    return res.status(401).json({ success: false, error: "Unauthorized password." });
+  }
+
+  if (settings && typeof settings === "object") {
+    Object.keys(settings).forEach((key) => {
+      if (key in config) {
+        config[key] = parseFloat(settings[key]);
+        saveSettingToDb(key, config[key]);
+      }
+    });
+    console.log("Updated runtime strategy settings:", config);
+    return res.json({ success: true, config });
+  }
+
+  res.status(400).json({ success: false, error: "Invalid settings payload." });
+});
+
 app.get("/api/status", (req, res) => {
   const marketsList = Object.keys(marketData).map((sym) => {
     const prices = marketData[sym].prices;
@@ -246,7 +309,7 @@ app.get("/api/status", (req, res) => {
       history: prices.slice(-20),
       rsi: typeof rsiVal === "number" ? parseFloat(rsiVal.toFixed(2)) : null,
       volSurge: marketData[sym].lastVolumeSurge,
-      canBuy: (availableBalances["USDT"] || 0) >= 5.5,
+      canBuy: (availableBalances["USDT"] || 0) >= config.tradeAmountUsdt,
       canSell: holdingUsd >= 5.0,
       holdingUsd: parseFloat(holdingUsd.toFixed(2)),
     };
@@ -255,6 +318,7 @@ app.get("/api/status", (req, res) => {
   res.json({
     interval: INTERVAL,
     markets: marketsList,
+    config,
     usdtBalance: parseFloat((availableBalances["USDT"] || 0).toFixed(2)),
   });
 });
@@ -352,7 +416,6 @@ app.get("/api/pnl", (req, res) => {
   }
 });
 
-// Protected Trade Execution Endpoint
 app.post("/api/trade", express.json(), async (req, res) => {
   const { symbol, side, usdtAmount, password } = req.body;
 
@@ -369,7 +432,7 @@ app.post("/api/trade", express.json(), async (req, res) => {
 
   try {
     const timestamp = Date.now();
-    const tradeAmount = usdtAmount || 5.5;
+    const tradeAmount = usdtAmount || config.tradeAmountUsdt;
 
     const query = `symbol=${symbol.toUpperCase()}&side=${side.toUpperCase()}&type=MARKET&quoteOrderQty=${tradeAmount}&timestamp=${timestamp}`;
     const signature = crypto.createHmac("sha256", secretKey).update(query).digest("hex");
@@ -429,14 +492,12 @@ app.use(express.static("public"));
 (async () => {
   await initDatabase();
   await updateAccountBalances();
-  setInterval(updateAccountBalances, 15000); // Refresh balance cache every 15s
+  setInterval(updateAccountBalances, 15000);
   await bootstrapHistoricalData();
   connectMultiStreamWS();
 
   app.listen(PORT, async () => {
     console.log(`Terminal running on http://localhost:${PORT}`);
-
-    // Send Startup Alert after server port binds cleanly
     const symbolsList = SYMBOLS.map((s) => s.toUpperCase()).join(", ");
     await sendTelegramAlert(`🟢 <b>Binance Trader Online</b>\n\nMonitoring: <code>${symbolsList}</code>`);
   });

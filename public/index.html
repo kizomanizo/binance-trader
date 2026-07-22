@@ -67,6 +67,22 @@
       color: #fff;
     }
 
+    .settings-btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--border-color);
+      color: #eaecef;
+      padding: 0.4rem 1rem;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .settings-btn:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+
     .container {
       max-width: 1200px;
       margin: 0 auto;
@@ -293,6 +309,21 @@
       border: 1px solid var(--red-down);
     }
 
+    .log-item.executed {
+      opacity: 0.65;
+      border-style: dashed;
+    }
+
+    .btn-executed {
+      background: var(--border-color) !important;
+      color: var(--green-up) !important;
+      border: 1px solid var(--green-up) !important;
+      cursor: default !important;
+      font-weight: 700;
+      padding: 0.4rem 0.8rem;
+      border-radius: 6px;
+    }
+
     .timestamp-badge {
       font-size: 0.75rem;
       color: var(--text-muted);
@@ -333,6 +364,7 @@
       font-size: 0.85rem;
     }
 
+    /* Outcome Ledger */
     .outcomes-container {
       background: var(--card-bg);
       border-radius: 12px;
@@ -384,7 +416,7 @@
       border-bottom: none;
     }
 
-    /* Modal */
+    /* Modals */
     .modal-overlay {
       display: none;
       position: fixed;
@@ -392,7 +424,7 @@
       left: 0;
       right: 0;
       bottom: 0;
-      background: rgba(0, 0, 0, 0.7);
+      background: rgba(0, 0, 0, 0.75);
       z-index: 2000;
       justify-content: center;
       align-items: center;
@@ -406,9 +438,30 @@
       background: var(--card-bg);
       border: 1px solid var(--border-color);
       border-radius: 12px;
-      padding: 2rem;
-      max-width: 400px;
+      padding: 1.75rem;
+      max-width: 440px;
       width: 90%;
+    }
+
+    .form-group {
+      margin-bottom: 1rem;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-bottom: 0.35rem;
+    }
+
+    .form-group input {
+      width: 100%;
+      padding: 0.55rem;
+      background: #0b0e11;
+      border: 1px solid var(--border-color);
+      color: #fff;
+      border-radius: 6px;
+      box-sizing: border-box;
     }
 
     /* Toast Notifications */
@@ -449,22 +502,6 @@
     .toast.info {
       border-left-color: #4a9eff;
     }
-
-    /* Executed Alert Card Styling */
-    .log-item.executed {
-      opacity: 0.65;
-      border-style: dashed;
-    }
-
-    .btn-executed {
-      background: var(--border-color) !important;
-      color: var(--green-up) !important;
-      border: 1px solid var(--green-up) !important;
-      cursor: default !important;
-      font-weight: 700;
-      padding: 0.4rem 0.8rem;
-      border-radius: 6px;
-    }
   </style>
 </head>
 
@@ -477,6 +514,9 @@
       <div class="override-bar">
         <button id="unlock-btn" onclick="toggleManualUnlock()" class="override-btn">
           🔓 Unlock Impulse Trade Controls
+        </button>
+        <button onclick="openSettingsModal()" class="settings-btn">
+          ⚙️ Strategy Settings
         </button>
       </div>
     </header>
@@ -523,10 +563,10 @@
       </div>
     </div>
 
-    <!-- Live Market Cards -->
+    <!-- Live Market Grid -->
     <div class="grid" id="market-grid"></div>
 
-    <!-- Alerts Feed -->
+    <!-- Strategy Alerts Feed -->
     <div class="logs-container">
       <div style="font-weight:700; margin-bottom:1rem;">⚡ Recent Strategy Alerts</div>
       <div id="logs-list">
@@ -542,6 +582,7 @@
       </div>
     </div>
 
+    <!-- Trade Outcome Ledger -->
     <div class="outcomes-container">
       <div style="font-weight:700; margin-bottom:0.75rem;">💾 Trade Outcome Ledger</div>
       <div style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
@@ -571,17 +612,15 @@
 
   <div class="toast-container" id="toast-container"></div>
 
-  <!-- Password Modal -->
+  <!-- Password Confirmation Modal -->
   <div class="modal-overlay" id="confirmModal">
     <div class="modal">
       <div style="font-size:1.2rem; font-weight:700; color:var(--accent-yellow); margin-bottom:0.5rem;" id="modalTitle">
         Confirm Action</div>
       <div style="color:var(--text-muted); margin-bottom:1.25rem;" id="modalText"></div>
-      <div style="margin-bottom: 1.25rem;">
-        <label style="display:block; font-size:0.8rem; color:var(--text-muted); margin-bottom:0.4rem;">Trading Password
-          Required</label>
-        <input type="password" id="tradePasswordInput" placeholder="Enter password"
-          style="width:100%; padding:0.6rem; background:#0b0e11; border:1px solid var(--border-color); color:#fff; border-radius:6px; box-sizing:border-box;" />
+      <div class="form-group">
+        <label>Trading Password Required</label>
+        <input type="password" id="tradePasswordInput" placeholder="Enter password" />
       </div>
       <div style="display:flex; gap:0.75rem; justify-content:flex-end;">
         <button class="time-btn" id="modalCancel" style="padding:0.5rem 1rem;">Cancel</button>
@@ -590,19 +629,64 @@
     </div>
   </div>
 
+  <!-- Strategy Settings Modal -->
+  <div class="modal-overlay" id="settingsModal">
+    <div class="modal">
+      <div style="font-size:1.2rem; font-weight:700; color:var(--accent-yellow); margin-bottom:1rem;">⚙️ Strategy
+        Settings</div>
+
+      <div class="form-group">
+        <label>RSI Oversold (BUY) Threshold</label>
+        <input type="number" id="cfg-rsiOversold" step="1" placeholder="32" />
+      </div>
+
+      <div class="form-group">
+        <label>RSI Overbought (SELL) Threshold</label>
+        <input type="number" id="cfg-rsiOverbought" step="1" placeholder="70" />
+      </div>
+
+      <div class="form-group">
+        <label>Volume Surge Multiplier (x SMA)</label>
+        <input type="number" id="cfg-volumeSurge" step="0.1" placeholder="1.8" />
+      </div>
+
+      <div class="form-group">
+        <label>Default Trade Amount (USDT)</label>
+        <input type="number" id="cfg-tradeAmount" step="0.5" placeholder="5.50" />
+      </div>
+
+      <div class="form-group">
+        <label>Cooldown Period (Minutes)</label>
+        <input type="number" id="cfg-cooldown" step="1" placeholder="5" />
+      </div>
+
+      <div class="form-group">
+        <label>Trading Password</label>
+        <input type="password" id="settingsPasswordInput" placeholder="Enter password to save" />
+      </div>
+
+      <div style="display:flex; gap:0.75rem; justify-content:flex-end; margin-top:1.25rem;">
+        <button class="time-btn" onclick="closeSettingsModal()" style="padding:0.5rem 1rem;">Cancel</button>
+        <button class="time-btn active" onclick="saveSettings()" style="padding:0.5rem 1rem;">Save to SQLite</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const charts = {};
     let isManualUnlocked = false;
     const activeAlerts = new Map();
+    const executedAlerts = new Set();
     const alertStorageKey = 'strategyAlerts';
     const outcomeStorageKey = 'tradeOutcomeLedger';
     const alertsPerPage = 5;
     const outcomeLimit = 12;
+
     let currentAlertPage = 1;
     let persistedAlerts = [];
     let tradeOutcomes = [];
 
-    // Toast Helper
+    // Toast Notification System
     function showToast(title, message, type = 'info', duration = 4000) {
       const container = document.getElementById('toast-container');
       const toast = document.createElement('div');
@@ -690,6 +774,7 @@
       return `${localStr} <span style="color:var(--accent-yellow);">(${agoStr})</span>`;
     }
 
+    // Persisted Alerts & Outcomes Local Storage
     function loadPersistedAlerts() {
       try {
         const raw = localStorage.getItem(alertStorageKey);
@@ -790,7 +875,10 @@
 
       pageAlerts.forEach(alert => {
         const item = document.createElement('div');
-        item.className = `log-item ${alert.action === 'BUY' ? 'buy-alert' : 'sell-alert'}`;
+        const isExecuted = executedAlerts.has(alert.id);
+        item.id = `alert-card-${alert.id}`;
+        item.className = `log-item ${alert.action === 'BUY' ? 'buy-alert' : 'sell-alert'} ${isExecuted ? 'executed' : ''}`;
+
         item.innerHTML = `
           <div>
             <div style="font-weight:700; color:${alert.action === 'BUY' ? 'var(--green-up)' : 'var(--red-down)'};">
@@ -801,10 +889,12 @@
               Price: <b>$${alert.price}</b> | RSI: <b>${alert.rsi}</b>
             </div>
           </div>
-          <div>
-            ${alert.action === 'BUY'
-            ? `<button onclick="executeInAppTrade('${alert.symbol}', 'BUY', 5.50, '${alert.id}')" class="btn-buy" style="padding:0.4rem 0.8rem;">BUY $5.50</button>`
-            : `<button onclick="executeInAppTrade('${alert.symbol}', 'SELL', 5.50, '${alert.id}')" class="btn-sell" style="padding:0.4rem 0.8rem;">SELL NOW</button>`
+          <div id="action-container-${alert.id}">
+            ${isExecuted
+            ? `<button class="btn-executed" disabled>✓ EXECUTED</button>`
+            : alert.action === 'BUY'
+              ? `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'BUY', 5.50, '${alert.id}')" class="btn-buy" style="padding:0.4rem 0.8rem;">BUY $5.50</button>`
+              : `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'SELL', 5.50, '${alert.id}')" class="btn-sell" style="padding:0.4rem 0.8rem;">SELL NOW</button>`
           }
           </div>
         `;
@@ -829,21 +919,70 @@
       const createdTime = Date.now();
       activeAlerts.set(alertId, createdTime);
 
-      const alert = {
-        id: alertId,
-        symbol,
-        price,
-        rsi,
-        action,
-        createdTime
-      };
-
-      // Persist most recent alerts, but keep only the last 20
+      const alert = { id: alertId, symbol, price, rsi, action, createdTime };
       persistedAlerts.unshift(alert);
       persistedAlerts = persistedAlerts.slice(0, 20);
       savePersistedAlerts();
 
       renderAlertPage(currentAlertPage);
+    }
+
+    // Settings Modal
+    async function openSettingsModal() {
+      try {
+        const res = await fetch('api/settings');
+        const data = await res.json();
+        if (data.success && data.config) {
+          document.getElementById('cfg-rsiOversold').value = data.config.rsiOversold;
+          document.getElementById('cfg-rsiOverbought').value = data.config.rsiOverbought;
+          document.getElementById('cfg-volumeSurge').value = data.config.volumeSurgeMultiplier;
+          document.getElementById('cfg-tradeAmount').value = data.config.tradeAmountUsdt;
+          document.getElementById('cfg-cooldown').value = data.config.cooldownMinutes;
+        }
+      } catch (err) {
+        console.error("Settings load error:", err);
+      }
+      document.getElementById('settingsModal').classList.add('active');
+    }
+
+    function closeSettingsModal() {
+      document.getElementById('settingsModal').classList.remove('active');
+      document.getElementById('settingsPasswordInput').value = '';
+    }
+
+    async function saveSettings() {
+      const password = document.getElementById('settingsPasswordInput').value.trim();
+      if (!password) {
+        showToast('Password Required', 'Please enter your trading password.', 'error');
+        return;
+      }
+
+      const settings = {
+        rsiOversold: parseFloat(document.getElementById('cfg-rsiOversold').value),
+        rsiOverbought: parseFloat(document.getElementById('cfg-rsiOverbought').value),
+        volumeSurgeMultiplier: parseFloat(document.getElementById('cfg-volumeSurge').value),
+        tradeAmountUsdt: parseFloat(document.getElementById('cfg-tradeAmount').value),
+        cooldownMinutes: parseFloat(document.getElementById('cfg-cooldown').value),
+      };
+
+      try {
+        const res = await fetch('api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password, settings }),
+        });
+
+        const data = await res.json();
+        if (data.success) {
+          showToast('Settings Saved', 'Strategy parameters persisted to SQLite!', 'success');
+          closeSettingsModal();
+          updateDashboard();
+        } else {
+          showToast('Save Failed', data.error || 'Incorrect password', 'error');
+        }
+      } catch (err) {
+        showToast('Error', err.message, 'error');
+      }
     }
 
     async function toggleManualUnlock() {
@@ -915,17 +1054,8 @@
     function initChart(symbol, ctx) {
       return new Chart(ctx, {
         type: 'line',
-        data: {
-          labels: Array(20).fill(''),
-          datasets: [{
-            data: [], borderColor: '#0ecb81', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.2
-          }]
-        },
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          plugins: { legend: { display: false }, tooltip: { enabled: false } },
-          scales: { x: { display: false }, y: { display: false } }
-        }
+        data: { labels: Array(20).fill(''), datasets: [{ data: [], borderColor: '#0ecb81', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.2 }] },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } }
       });
     }
 
@@ -944,7 +1074,6 @@
           }
 
           let card = document.getElementById(`card-${m.symbol}`);
-
           if (!card) {
             card = document.createElement('div');
             card.id = `card-${m.symbol}`;
@@ -976,7 +1105,6 @@
               </div>
             `;
             grid.appendChild(card);
-
             const ctx = document.getElementById(`chart-${m.symbol}`).getContext('2d');
             charts[m.symbol] = initChart(m.symbol, ctx);
           }
@@ -986,23 +1114,20 @@
           const rsiEl = document.getElementById(`rsi-${m.symbol}`);
           if (m.rsi !== null) {
             rsiEl.innerText = m.rsi;
-            rsiEl.className = 'rsi-val ' + (m.rsi <= 32 ? 'rsi-oversold' : m.rsi >= 70 ? 'rsi-overbought' : 'rsi-neutral');
+            rsiEl.className = 'rsi-val ' + (m.rsi <= data.config.rsiOversold ? 'rsi-oversold' : m.rsi >= data.config.rsiOverbought ? 'rsi-overbought' : 'rsi-neutral');
           }
 
           const surgeEl = document.getElementById(`surge-${m.symbol}`);
           surgeEl.innerText = m.volSurge ? 'YES ⚡' : 'No';
-          surgeEl.className = m.volSurge ? 'surge-yes' : '';
 
-          // Update card button enablement state based on backend balance flags
           const buyBtn = document.getElementById(`buybtn-${m.symbol}`);
           const sellBtn = document.getElementById(`sellbtn-${m.symbol}`);
           if (buyBtn) buyBtn.disabled = !m.canBuy;
           if (sellBtn) sellBtn.disabled = !m.canSell;
 
-          // Smart Alert Rendering: Only render BUY if canBuy is true, and SELL if canSell is true
-          if (m.rsi !== null && m.rsi <= 32 && m.volSurge && m.canBuy) {
+          if (m.rsi !== null && m.rsi <= data.config.rsiOversold && m.volSurge && m.canBuy) {
             renderAlertCard(m.symbol, m.price, m.rsi, 'BUY');
-          } else if (m.rsi !== null && m.rsi >= 70 && m.canSell) {
+          } else if (m.rsi !== null && m.rsi >= data.config.rsiOverbought && m.canSell) {
             renderAlertCard(m.symbol, m.price, m.rsi, 'SELL');
           }
         });
@@ -1011,46 +1136,6 @@
       } catch (err) {
         console.error("Dashboard error:", err);
       }
-    }
-
-    // Track executed alert IDs in UI memory
-    const executedAlerts = new Set();
-
-    function renderAlertCard(symbol, price, rsi, action) {
-      const alertId = `${symbol}_${action}_${price}`;
-      if (activeAlerts.has(alertId)) return;
-
-      const createdTime = Date.now();
-      activeAlerts.set(alertId, createdTime);
-
-      const logsList = document.getElementById('logs-list');
-      const emptyMsg = logsList.querySelector('.empty-logs');
-      if (emptyMsg) emptyMsg.remove();
-
-      const item = document.createElement('div');
-      const isBuy = action === 'BUY';
-      item.id = `alert-card-${alertId}`;
-      item.className = `log-item ${isBuy ? 'buy-alert' : 'sell-alert'}`;
-
-      item.innerHTML = `
-    <div>
-      <div style="font-weight:700; color:${isBuy ? 'var(--green-up)' : 'var(--red-down)'};">
-        ${isBuy ? '⚡ BUY SIGNAL' : '🚨 SELL SIGNAL'}: ${symbol}
-        <span class="timestamp-badge" id="time-${alertId}">${formatAlertTime(createdTime)}</span>
-      </div>
-      <div style="color:var(--text-muted); margin-top:0.25rem;">
-        Price: <b>$${price}</b> | RSI: <b>${rsi}</b>
-      </div>
-    </div>
-    <div id="action-container-${alertId}">
-      ${isBuy
-          ? `<button id="btn-${alertId}" onclick="executeInAppTrade('${symbol}', 'BUY', 5.50, '${alertId}')" class="btn-buy" style="padding:0.4rem 0.8rem;">BUY $5.50</button>`
-          : `<button id="btn-${alertId}" onclick="executeInAppTrade('${symbol}', 'SELL', 5.50, '${alertId}')" class="btn-sell" style="padding:0.4rem 0.8rem;">SELL NOW</button>`
-        }
-    </div>
-  `;
-
-      logsList.prepend(item);
     }
 
     async function executeInAppTrade(symbol, side, amount, alertId = null) {
@@ -1063,7 +1148,6 @@
       const btn = alertId ? document.getElementById(`btn-${alertId}`) : null;
       const originalText = btn ? btn.innerText : '';
 
-      // 1. Immediately disable button & show loading state
       if (btn) {
         btn.disabled = true;
         btn.innerText = 'Executing...';
@@ -1096,7 +1180,6 @@
           showToast('✓ Order Executed', `${side} ${symbol.toUpperCase()} successful! Order ID: ${data.orderId}`, 'success', 5000);
           addTradeOutcome(outcomeEntry);
 
-          // 2. Mark Alert Card as EXECUTED in the UI
           if (alertId) {
             executedAlerts.add(alertId);
             const card = document.getElementById(`alert-card-${alertId}`);
@@ -1108,7 +1191,6 @@
             }
           }
 
-          // Refresh balances & PnL
           fetchHoldings();
           fetchPnL();
 
@@ -1118,7 +1200,6 @@
         } else {
           showToast('Trade Failed', data.error || 'Unknown error', 'error', 4000);
           addTradeOutcome(outcomeEntry);
-          // Restore button state on failure
           if (btn) {
             btn.disabled = false;
             btn.innerText = originalText;
