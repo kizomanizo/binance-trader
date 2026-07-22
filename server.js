@@ -24,6 +24,8 @@ let config = {
   volumeSurgeMultiplier: 1.8,
   tradeAmountUsdt: 5.5,
   cooldownMinutes: 5,
+  takeProfitPercent: 1.5, // Min gain % required to trigger SELL alert
+  stopLossPercent: 2.0, // Max loss % before triggering Stop Loss alert
 };
 
 function saveDatabase() {
@@ -90,6 +92,38 @@ function saveSettingToDb(key, value) {
   saveDatabase();
 }
 
+// Calculate FIFO Average Entry Price for currently open position
+function getAverageEntryPrice(symbol) {
+  try {
+    const stmt = db.prepare("SELECT side, qty, usdt_amount FROM trades WHERE UPPER(symbol) = ? ORDER BY timestamp ASC");
+    stmt.bind([symbol.toUpperCase()]);
+
+    let totalQty = 0;
+    let totalCost = 0;
+
+    while (stmt.step()) {
+      const trade = stmt.getAsObject();
+      if (trade.side === "BUY") {
+        totalQty += trade.qty;
+        totalCost += trade.usdt_amount;
+      } else if (trade.side === "SELL") {
+        if (totalQty > 0) {
+          const avgPrice = totalCost / totalQty;
+          const costBasisForSale = trade.qty * avgPrice;
+          totalCost = Math.max(0, totalCost - costBasisForSale);
+          totalQty = Math.max(0, totalQty - trade.qty);
+        }
+      }
+    }
+    stmt.free();
+
+    return totalQty > 0 ? totalCost / totalQty : null;
+  } catch (err) {
+    console.error(`Error calculating entry price for ${symbol}:`, err.message);
+    return null;
+  }
+}
+
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const TRADE_PASSWORD = process.env.TRADE_PASSWORD || "admin123";
@@ -110,7 +144,7 @@ SYMBOLS.forEach((sym) => {
 
 async function sendTelegramAlert(message) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-    console.warn("[TELEGRAM SKIPPED] Missing token or chat ID.");
+    console.warn("[TELEGRAM SKIPPED] Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID in .env");
     return;
   }
 
@@ -243,19 +277,49 @@ function connectMultiStreamWS() {
           const currentAssetUsdVal = currentAssetBalance * closePrice;
           const usdtBalance = availableBalances["USDT"] || 0;
 
-          // 1. DYNAMIC BUY SIGNAL EVALUATION
+          // 1. CONDITIONAL BUY SIGNAL: RSI <= Oversold AND Vol Surge AND Free USDT >= config.tradeAmountUsdt
           if (target.lastRsi <= config.rsiOversold && isVolumeSurge && usdtBalance >= config.tradeAmountUsdt) {
             sendTelegramAlert(
               `⚡ <b>BUY SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Available Cash:</b> $${usdtBalance.toFixed(2)} USDT`,
             );
             target.lastSignalTime = now;
           }
-          // 2. DYNAMIC SELL SIGNAL EVALUATION
-          else if (target.lastRsi >= config.rsiOverbought && currentAssetUsdVal >= 5.0) {
-            sendTelegramAlert(
-              `🚨 <b>SELL SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Holding Value:</b> $${currentAssetUsdVal.toFixed(2)} USD`,
-            );
-            target.lastSignalTime = now;
+          // 2. COST-BASIS AWARE SELL SIGNALS (Take Profit & Stop Loss)
+          else if (currentAssetUsdVal >= 5.0) {
+            const avgEntryPrice = getAverageEntryPrice(sym);
+
+            if (avgEntryPrice) {
+              const pnlPercent = ((closePrice - avgEntryPrice) / avgEntryPrice) * 100;
+
+              // A. Take Profit Signal (RSI Overbought AND in profit by at least takeProfitPercent)
+              if (target.lastRsi >= config.rsiOverbought && pnlPercent >= (config.takeProfitPercent || 1.5)) {
+                sendTelegramAlert(
+                  `🎯 <b>TAKE PROFIT SIGNAL (${sym})</b>\n\n` +
+                    `<b>Price:</b> $${closePrice} (Entry: $${avgEntryPrice.toFixed(2)})\n` +
+                    `<b>Unrealized Gain:</b> +${pnlPercent.toFixed(2)}%\n` +
+                    `<b>RSI:</b> ${target.lastRsi.toFixed(2)}`,
+                );
+                target.lastSignalTime = now;
+              }
+              // B. Stop Loss Signal (Price dropped below cost basis limit)
+              else if (pnlPercent <= -(config.stopLossPercent || 2.0)) {
+                sendTelegramAlert(
+                  `🛑 <b>STOP LOSS ALERT (${sym})</b>\n\n` +
+                    `<b>Price:</b> $${closePrice} (Entry: $${avgEntryPrice.toFixed(2)})\n` +
+                    `<b>Unrealized Loss:</b> ${pnlPercent.toFixed(2)}%\n` +
+                    `<b>Action:</b> Consider selling to protect capital.`,
+                );
+                target.lastSignalTime = now;
+              }
+            } else {
+              // Fallback if entry price is unrecorded in DB but asset is held
+              if (target.lastRsi >= config.rsiOverbought) {
+                sendTelegramAlert(
+                  `🚨 <b>SELL SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Holding Value:</b> $${currentAssetUsdVal.toFixed(2)} USD`,
+                );
+                target.lastSignalTime = now;
+              }
+            }
           }
         }
       }
@@ -294,6 +358,7 @@ app.post("/api/settings", express.json(), (req, res) => {
   res.status(400).json({ success: false, error: "Invalid settings payload." });
 });
 
+// Dashboard Status API
 app.get("/api/status", (req, res) => {
   const marketsList = Object.keys(marketData).map((sym) => {
     const prices = marketData[sym].prices;
@@ -302,6 +367,7 @@ app.get("/api/status", (req, res) => {
     const holdingQty = availableBalances[baseAsset] || 0;
     const currentPrice = prices.length > 0 ? prices[prices.length - 1] : 0;
     const holdingUsd = holdingQty * currentPrice;
+    const avgEntryPrice = getAverageEntryPrice(sym);
 
     return {
       symbol: sym,
@@ -312,6 +378,7 @@ app.get("/api/status", (req, res) => {
       canBuy: (availableBalances["USDT"] || 0) >= config.tradeAmountUsdt,
       canSell: holdingUsd >= 5.0,
       holdingUsd: parseFloat(holdingUsd.toFixed(2)),
+      avgEntryPrice: avgEntryPrice ? parseFloat(avgEntryPrice.toFixed(2)) : null,
     };
   });
 
@@ -416,6 +483,7 @@ app.get("/api/pnl", (req, res) => {
   }
 });
 
+// Protected Trade Execution Endpoint
 app.post("/api/trade", express.json(), async (req, res) => {
   const { symbol, side, usdtAmount, password } = req.body;
 
