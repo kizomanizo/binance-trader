@@ -1139,9 +1139,14 @@
       }
     }
 
-    async function executeInAppTrade(symbol, side, amount, alertId = null) {
+    async function executeInAppTrade(symbol, side, amount = null, alertId = null, sellAll = false) {
+      const isSell = side.toUpperCase() === 'SELL';
       const confirmTitle = `Execute ${side} Order`;
-      const confirmMessage = `Execute a MARKET ${side} order for $${amount} USDT worth of ${symbol.toUpperCase()}?`;
+
+      // Custom dialog message based on whether we are liquidating 100% position or placing fixed dollar buy
+      const confirmMessage = isSell || sellAll
+        ? `Execute MARKET SELL for 100% of your available ${symbol.toUpperCase()} balance?`
+        : `Execute a MARKET BUY order for $${amount || 5.50} USDT worth of ${symbol.toUpperCase()}?`;
 
       const password = await showConfirmationWithPassword(confirmTitle, confirmMessage);
       if (!password) return;
@@ -1154,19 +1159,25 @@
         btn.innerText = 'Executing...';
       }
 
-      // Save reference to processing toast
       const processingToast = showToast('Processing', `Sending ${side} order for ${symbol}...`, 'info', 0);
 
       try {
+        const payload = {
+          symbol,
+          side,
+          password,
+          sellAll: isSell || sellAll,
+          usdtAmount: !isSell ? (amount || 5.50) : undefined,
+        };
+
         const res = await fetch('api/trade', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ symbol, side, usdtAmount: amount, password })
+          body: JSON.stringify(payload)
         });
 
         const data = await res.json();
 
-        // Immediately remove processing toast upon response
         if (processingToast) processingToast.remove();
 
         const outcomeEntry = {
@@ -1174,7 +1185,7 @@
           timestamp: Date.now(),
           symbol,
           side,
-          amount,
+          amount: amount || 0,
           status: data.success ? 'SUCCESS' : 'FAILED',
           outcome: data.success ? `Order #${data.orderId}` : (data.error || 'Unknown failure'),
           orderId: data.orderId || null,
@@ -1218,7 +1229,7 @@
           timestamp: Date.now(),
           symbol,
           side,
-          amount,
+          amount: amount || 0,
           status: 'ERROR',
           outcome: err.message || 'Network error',
           orderId: null,

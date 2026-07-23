@@ -485,7 +485,7 @@ app.get("/api/pnl", (req, res) => {
 
 // Protected Trade Execution Endpoint
 app.post("/api/trade", express.json(), async (req, res) => {
-  const { symbol, side, usdtAmount, password } = req.body;
+  const { symbol, side, usdtAmount, quantity, sellAll, password } = req.body;
 
   if (!password || password !== TRADE_PASSWORD) {
     return res.status(401).json({ success: false, error: "Unauthorized: Incorrect password." });
@@ -500,12 +500,31 @@ app.post("/api/trade", express.json(), async (req, res) => {
 
   try {
     const timestamp = Date.now();
-    const tradeAmount = usdtAmount || config.tradeAmountUsdt;
+    const symUpper = symbol.toUpperCase();
+    const baseAsset = symUpper.replace("USDT", "");
+    const isSell = side.toUpperCase() === "SELL";
 
-    const query = `symbol=${symbol.toUpperCase()}&side=${side.toUpperCase()}&type=MARKET&quoteOrderQty=${tradeAmount}&timestamp=${timestamp}`;
-    const signature = crypto.createHmac("sha256", secretKey).update(query).digest("hex");
+    let queryParams = `symbol=${symUpper}&side=${side.toUpperCase()}&type=MARKET&timestamp=${timestamp}`;
 
-    const response = await fetch(`https://api.binance.com/api/v3/order?${query}&signature=${signature}`, {
+    // Handle SELL ALL or specific Token Quantity vs USDT Dollar Amount
+    if (isSell && (sellAll || quantity)) {
+      await updateAccountBalances(); // Ensure fresh balance
+      let sellQty = quantity || availableBalances[baseAsset] || 0;
+
+      if (sellQty <= 0) {
+        return res.status(400).json({ success: false, error: `No available ${baseAsset} balance to sell.` });
+      }
+
+      // Format quantity to prevent precision overflow errors
+      queryParams += `&quantity=${sellQty}`;
+    } else {
+      const tradeAmount = usdtAmount || config.tradeAmountUsdt;
+      queryParams += `&quoteOrderQty=${tradeAmount}`;
+    }
+
+    const signature = crypto.createHmac("sha256", secretKey).update(queryParams).digest("hex");
+
+    const response = await fetch(`https://api.binance.com/api/v3/order?${queryParams}&signature=${signature}`, {
       method: "POST",
       headers: {
         "X-MBX-APIKEY": apiKey,
@@ -516,15 +535,16 @@ app.post("/api/trade", express.json(), async (req, res) => {
     const result = await response.json();
 
     if (result.orderId) {
-      const executedPrice = parseFloat(result.fills?.[0]?.price || marketData[symbol.toUpperCase()]?.prices.slice(-1)[0] || 0);
-      const executedQty = parseFloat(result.executedQty || tradeAmount / executedPrice);
+      const executedPrice = parseFloat(result.fills?.[0]?.price || marketData[symUpper]?.prices.slice(-1)[0] || 0);
+      const executedQty = parseFloat(result.executedQty || 0);
+      const executedUsdt = parseFloat(result.cummulativeQuoteQty || tradeAmount || executedQty * executedPrice);
 
       db.run(`INSERT INTO trades (symbol, side, price, qty, usdt_amount, order_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
-        symbol.toUpperCase(),
+        symUpper,
         side.toUpperCase(),
         executedPrice,
         executedQty,
-        tradeAmount,
+        executedUsdt,
         String(result.orderId),
         timestamp,
       ]);
@@ -533,8 +553,8 @@ app.post("/api/trade", express.json(), async (req, res) => {
 
       sendTelegramAlert(
         `✅ <b>TRADE EXECUTED (${side.toUpperCase()})</b>\n\n` +
-          `<b>Symbol:</b> ${symbol.toUpperCase()}\n` +
-          `<b>Amount:</b> $${tradeAmount} USDT\n` +
+          `<b>Symbol:</b> ${symUpper}\n` +
+          `<b>Amount:</b> $${executedUsdt.toFixed(2)} USDT (${executedQty} ${baseAsset})\n` +
           `<b>Executed Price:</b> $${executedPrice}\n` +
           `<b>Order ID:</b> <code>${result.orderId}</code>`,
       );
@@ -542,7 +562,7 @@ app.post("/api/trade", express.json(), async (req, res) => {
       return res.json({
         success: true,
         orderId: result.orderId,
-        symbol: symbol.toUpperCase(),
+        symbol: symUpper,
         side: side.toUpperCase(),
         executedPrice,
         details: result,
