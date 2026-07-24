@@ -139,6 +139,7 @@ SYMBOLS.forEach((sym) => {
     lastRsi: null,
     lastVolumeSurge: false,
     lastSignalTime: 0,
+    lastStopLossPnl: null,
   };
 });
 
@@ -303,13 +304,24 @@ function connectMultiStreamWS() {
               }
               // B. Stop Loss Signal (Price dropped below cost basis limit)
               else if (pnlPercent <= -(config.stopLossPercent || 2.0)) {
-                sendTelegramAlert(
-                  `🛑 <b>STOP LOSS ALERT (${sym})</b>\n\n` +
-                    `<b>Price:</b> $${closePrice} (Entry: $${avgEntryPrice.toFixed(2)})\n` +
-                    `<b>Unrealized Loss:</b> ${pnlPercent.toFixed(2)}%\n` +
-                    `<b>Action:</b> Consider selling to protect capital.`,
-                );
-                target.lastSignalTime = now;
+                // Only alert if we haven't alerted for this dip, or if loss expanded by another 1.0%
+                const lastPnl = target.lastStopLossPnl;
+                const isDeeperDip = lastPnl !== null && pnlPercent <= lastPnl - 1.0;
+
+                if (lastPnl === null || isDeeperDip) {
+                  sendTelegramAlert(
+                    `🛑 <b>STOP LOSS ALERT (${sym})</b>\n\n` +
+                      `<b>Price:</b> $${closePrice} (Entry: $${avgEntryPrice.toFixed(2)})\n` +
+                      `<b>Unrealized Loss:</b> ${pnlPercent.toFixed(2)}%\n` +
+                      `<b>Action:</b> Consider selling to protect capital.`,
+                  );
+                  target.lastSignalTime = now;
+                  target.lastStopLossPnl = pnlPercent; // Lock in this alert level
+                }
+              }
+              // Reset stop loss tracking when position moves back out of stop-loss territory
+              else if (pnlPercent > -(config.stopLossPercent || 2.0)) {
+                target.lastStopLossPnl = null;
               }
             } else {
               // Fallback if entry price is unrecorded in DB but asset is held
