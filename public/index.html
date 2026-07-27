@@ -88,7 +88,6 @@
       margin: 0 auto;
     }
 
-    /* Top Stats Grid */
     .dashboard-top {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -162,7 +161,6 @@
       color: var(--text-muted);
     }
 
-    /* Market Cards Grid */
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -281,7 +279,6 @@
       cursor: not-allowed;
     }
 
-    /* Signals Log Section */
     .logs-container {
       background: var(--card-bg);
       border-radius: 12px;
@@ -364,7 +361,6 @@
       font-size: 0.85rem;
     }
 
-    /* Outcome Ledger */
     .outcomes-container {
       background: var(--card-bg);
       border-radius: 12px;
@@ -416,7 +412,6 @@
       border-bottom: none;
     }
 
-    /* Modals */
     .modal-overlay {
       display: none;
       position: fixed;
@@ -464,7 +459,6 @@
       box-sizing: border-box;
     }
 
-    /* Toast Notifications */
     .toast-container {
       position: fixed;
       bottom: 2rem;
@@ -521,7 +515,6 @@
       </div>
     </header>
 
-    <!-- Top Dashboard Panels -->
     <div class="dashboard-top">
       <div class="panel-card">
         <div class="panel-header">
@@ -563,10 +556,8 @@
       </div>
     </div>
 
-    <!-- Live Market Grid -->
     <div class="grid" id="market-grid"></div>
 
-    <!-- Strategy Alerts Feed -->
     <div class="logs-container">
       <div style="font-weight:700; margin-bottom:1rem;">⚡ Recent Strategy Alerts</div>
       <div id="logs-list">
@@ -582,7 +573,6 @@
       </div>
     </div>
 
-    <!-- Trade Outcome Ledger -->
     <div class="outcomes-container">
       <div style="font-weight:700; margin-bottom:0.75rem;">💾 Trade Outcome Ledger</div>
       <div style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
@@ -612,7 +602,6 @@
 
   <div class="toast-container" id="toast-container"></div>
 
-  <!-- Password Confirmation Modal -->
   <div class="modal-overlay" id="confirmModal">
     <div class="modal">
       <div style="font-size:1.2rem; font-weight:700; color:var(--accent-yellow); margin-bottom:0.5rem;" id="modalTitle">
@@ -629,7 +618,6 @@
     </div>
   </div>
 
-  <!-- Strategy Settings Modal -->
   <div class="modal-overlay" id="settingsModal">
     <div class="modal">
       <div style="font-size:1.2rem; font-weight:700; color:var(--accent-yellow); margin-bottom:1rem;">⚙️ Strategy
@@ -686,17 +674,16 @@
     let persistedAlerts = [];
     let tradeOutcomes = [];
 
-    // Return the created toast element so caller can manually dismiss it
     function showToast(title, message, type = 'info', duration = 4000) {
       const container = document.getElementById('toast-container');
       const toast = document.createElement('div');
       toast.className = `toast ${type}`;
       toast.innerHTML = `
-    <div>
-      <div style="font-weight:700; font-size:0.85rem;">${title}</div>
-      <div style="font-size:0.8rem; color:var(--text-muted); margin-top:2px;">${message}</div>
-    </div>
-  `;
+        <div>
+          <div style="font-weight:700; font-size:0.85rem;">${title}</div>
+          <div style="font-size:0.8rem; color:var(--text-muted); margin-top:2px;">${message}</div>
+        </div>
+      `;
       container.appendChild(toast);
       if (duration > 0) setTimeout(() => toast.remove(), duration);
       return toast;
@@ -775,7 +762,6 @@
       return `${localStr} <span style="color:var(--accent-yellow);">(${agoStr})</span>`;
     }
 
-    // Persisted Alerts & Outcomes Local Storage
     function loadPersistedAlerts() {
       try {
         const raw = localStorage.getItem(alertStorageKey);
@@ -833,7 +819,7 @@
             <td>${new Date(o.timestamp).toLocaleTimeString()}</td>
             <td>${o.side}</td>
             <td>${o.symbol}</td>
-            <td>$${o.amount.toFixed(2)}</td>
+            <td>$${parseFloat(o.amount).toFixed(2)}</td>
             <td class="outcome-status ${o.status === 'SUCCESS' ? 'status-success' : 'status-failed'}">
               ${o.status}
             </td>
@@ -895,7 +881,7 @@
             ? `<button class="btn-executed" disabled>✓ EXECUTED</button>`
             : alert.action === 'BUY'
               ? `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'BUY', 5.50, '${alert.id}')" class="btn-buy" style="padding:0.4rem 0.8rem;">BUY $5.50</button>`
-              : `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'SELL', 5.50, '${alert.id}')" class="btn-sell" style="padding:0.4rem 0.8rem;">SELL NOW</button>`
+              : `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'SELL', null, '${alert.id}', true)" class="btn-sell" style="padding:0.4rem 0.8rem;">SELL NOW</button>`
           }
           </div>
         `;
@@ -928,7 +914,6 @@
       renderAlertPage(currentAlertPage);
     }
 
-    // Settings Modal
     async function openSettingsModal() {
       try {
         const res = await fetch('api/settings');
@@ -986,6 +971,16 @@
       }
     }
 
+    function relockControls() {
+      isManualUnlocked = false;
+      const unlockBtn = document.getElementById('unlock-btn');
+      if (unlockBtn) {
+        unlockBtn.innerText = '🔓 Unlock Impulse Trade Controls';
+        unlockBtn.classList.remove('unlocked');
+      }
+      updateButtonVisibility();
+    }
+
     async function toggleManualUnlock() {
       const unlockBtn = document.getElementById('unlock-btn');
 
@@ -1002,10 +997,7 @@
           updateButtonVisibility();
         }
       } else {
-        isManualUnlocked = false;
-        unlockBtn.innerText = '🔓 Unlock Impulse Trade Controls';
-        unlockBtn.classList.remove('unlocked');
-        updateButtonVisibility();
+        relockControls();
       }
     }
 
@@ -1101,7 +1093,7 @@
                 </div>
                 <div class="btn-group" id="btngroup-${m.symbol}">
                   <button id="buybtn-${m.symbol}" onclick="executeInAppTrade('${m.symbol}', 'BUY', 5.50)" class="btn-buy">BUY $5.50</button>
-                  <button id="sellbtn-${m.symbol}" onclick="executeInAppTrade('${m.symbol}', 'SELL', 5.50)" class="btn-sell">SELL</button>
+                  <button id="sellbtn-${m.symbol}" onclick="executeInAppTrade('${m.symbol}', 'SELL', null, null, true)" class="btn-sell">SELL</button>
                 </div>
               </div>
             `;
@@ -1143,7 +1135,6 @@
       const isSell = side.toUpperCase() === 'SELL';
       const confirmTitle = `Execute ${side} Order`;
 
-      // Custom dialog message based on whether we are liquidating 100% position or placing fixed dollar buy
       const confirmMessage = isSell || sellAll
         ? `Execute MARKET SELL for 100% of your available ${symbol.toUpperCase()} balance?`
         : `Execute a MARKET BUY order for $${amount || 5.50} USDT worth of ${symbol.toUpperCase()}?`;
@@ -1185,7 +1176,7 @@
           timestamp: Date.now(),
           symbol,
           side,
-          amount: amount || 0,
+          amount: data.details?.cummulativeQuoteQty ? parseFloat(data.details.cummulativeQuoteQty) : (amount || 0),
           status: data.success ? 'SUCCESS' : 'FAILED',
           outcome: data.success ? `Order #${data.orderId}` : (data.error || 'Unknown failure'),
           orderId: data.orderId || null,

@@ -14,8 +14,9 @@ const PORT = process.env.APP_PORT || 3000;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, "trades.db");
 let db;
 
-// Memory store for user's active Binance spot balances
+// Memory store for user's active Binance spot balances & lot size rules
 const availableBalances = { USDT: 0 };
+const symbolLotSizes = {}; // Stores stepSize precision for each symbol
 
 // Default Strategy Config (fallback if database is empty)
 let config = {
@@ -24,8 +25,8 @@ let config = {
   volumeSurgeMultiplier: 1.8,
   tradeAmountUsdt: 5.5,
   cooldownMinutes: 5,
-  takeProfitPercent: 1.5, // Min gain % required to trigger SELL alert
-  stopLossPercent: 2.0, // Max loss % before triggering Stop Loss alert
+  takeProfitPercent: 1.5,
+  stopLossPercent: 2.0,
 };
 
 function saveDatabase() {
@@ -45,7 +46,6 @@ async function initDatabase() {
     console.log("Created fresh SQLite database.");
   }
 
-  // Trades table
   db.run(`
     CREATE TABLE IF NOT EXISTS trades (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,7 +59,6 @@ async function initDatabase() {
     )
   `);
 
-  // Settings table for dynamic UI configuration
   db.run(`
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -92,7 +91,6 @@ function saveSettingToDb(key, value) {
   saveDatabase();
 }
 
-// Calculate FIFO Average Entry Price for currently open position
 function getAverageEntryPrice(symbol) {
   try {
     const stmt = db.prepare("SELECT side, qty, usdt_amount FROM trades WHERE UPPER(symbol) = ? ORDER BY timestamp ASC");
@@ -142,6 +140,36 @@ SYMBOLS.forEach((sym) => {
     lastStopLossPnl: null,
   };
 });
+
+// Fetch LOT_SIZE rules to format trade quantities precisely for Binance
+async function fetchExchangeInfo() {
+  try {
+    const res = await fetch("https://api.binance.com/api/v3/exchangeInfo");
+    const data = await res.json();
+    if (data.symbols) {
+      data.symbols.forEach((s) => {
+        const lotFilter = s.filters.find((f) => f.filterType === "LOT_SIZE");
+        if (lotFilter) {
+          const stepSize = parseFloat(lotFilter.stepSize);
+          const precision = stepSize.toString().includes(".") ? stepSize.toString().split(".")[1].indexOf("1") + 1 : 0;
+          symbolLotSizes[s.symbol] = { stepSize, precision };
+        }
+      });
+      console.log("Loaded exchange LOT_SIZE rules for precision formatting.");
+    }
+  } catch (err) {
+    console.error("Failed to fetch exchange info:", err.message);
+  }
+}
+
+function formatQuantity(symbol, qty) {
+  const rule = symbolLotSizes[symbol.toUpperCase()];
+  if (!rule) return qty;
+  const precision = rule.precision;
+  const factor = Math.pow(10, precision);
+  // Floor quantity to prevent exceeding actual balance or stepSize violation
+  return (Math.floor(qty * factor) / factor).toFixed(precision);
+}
 
 async function sendTelegramAlert(message) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
@@ -278,21 +306,17 @@ function connectMultiStreamWS() {
           const currentAssetUsdVal = currentAssetBalance * closePrice;
           const usdtBalance = availableBalances["USDT"] || 0;
 
-          // 1. CONDITIONAL BUY SIGNAL: RSI <= Oversold AND Vol Surge AND Free USDT >= config.tradeAmountUsdt
           if (target.lastRsi <= config.rsiOversold && isVolumeSurge && usdtBalance >= config.tradeAmountUsdt) {
             sendTelegramAlert(
               `⚡ <b>BUY SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Available Cash:</b> $${usdtBalance.toFixed(2)} USDT`,
             );
             target.lastSignalTime = now;
-          }
-          // 2. COST-BASIS AWARE SELL SIGNALS (Take Profit & Stop Loss)
-          else if (currentAssetUsdVal >= 5.0) {
+          } else if (currentAssetUsdVal >= 5.0) {
             const avgEntryPrice = getAverageEntryPrice(sym);
 
             if (avgEntryPrice) {
               const pnlPercent = ((closePrice - avgEntryPrice) / avgEntryPrice) * 100;
 
-              // A. Take Profit Signal (RSI Overbought AND in profit by at least takeProfitPercent)
               if (target.lastRsi >= config.rsiOverbought && pnlPercent >= (config.takeProfitPercent || 1.5)) {
                 sendTelegramAlert(
                   `🎯 <b>TAKE PROFIT SIGNAL (${sym})</b>\n\n` +
@@ -301,10 +325,7 @@ function connectMultiStreamWS() {
                     `<b>RSI:</b> ${target.lastRsi.toFixed(2)}`,
                 );
                 target.lastSignalTime = now;
-              }
-              // B. Stop Loss Signal (Price dropped below cost basis limit)
-              else if (pnlPercent <= -(config.stopLossPercent || 2.0)) {
-                // Only alert if we haven't alerted for this dip, or if loss expanded by another 1.0%
+              } else if (pnlPercent <= -(config.stopLossPercent || 2.0)) {
                 const lastPnl = target.lastStopLossPnl;
                 const isDeeperDip = lastPnl !== null && pnlPercent <= lastPnl - 1.0;
 
@@ -316,15 +337,12 @@ function connectMultiStreamWS() {
                       `<b>Action:</b> Consider selling to protect capital.`,
                   );
                   target.lastSignalTime = now;
-                  target.lastStopLossPnl = pnlPercent; // Lock in this alert level
+                  target.lastStopLossPnl = pnlPercent;
                 }
-              }
-              // Reset stop loss tracking when position moves back out of stop-loss territory
-              else if (pnlPercent > -(config.stopLossPercent || 2.0)) {
+              } else if (pnlPercent > -(config.stopLossPercent || 2.0)) {
                 target.lastStopLossPnl = null;
               }
             } else {
-              // Fallback if entry price is unrecorded in DB but asset is held
               if (target.lastRsi >= config.rsiOverbought) {
                 sendTelegramAlert(
                   `🚨 <b>SELL SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Holding Value:</b> $${currentAssetUsdVal.toFixed(2)} USD`,
@@ -344,7 +362,6 @@ function connectMultiStreamWS() {
   ws.on("close", () => setTimeout(connectMultiStreamWS, 3000));
 }
 
-// Get/Update Settings Endpoints
 app.get("/api/settings", (req, res) => {
   res.json({ success: true, config });
 });
@@ -370,7 +387,6 @@ app.post("/api/settings", express.json(), (req, res) => {
   res.status(400).json({ success: false, error: "Invalid settings payload." });
 });
 
-// Dashboard Status API
 app.get("/api/status", (req, res) => {
   const marketsList = Object.keys(marketData).map((sym) => {
     const prices = marketData[sym].prices;
@@ -517,20 +533,20 @@ app.post("/api/trade", express.json(), async (req, res) => {
     const isSell = side.toUpperCase() === "SELL";
 
     let queryParams = `symbol=${symUpper}&side=${side.toUpperCase()}&type=MARKET&timestamp=${timestamp}`;
+    let tradeAmount = usdtAmount || config.tradeAmountUsdt;
 
-    // Handle SELL ALL or specific Token Quantity vs USDT Dollar Amount
     if (isSell && (sellAll || quantity)) {
-      await updateAccountBalances(); // Ensure fresh balance
-      let sellQty = quantity || availableBalances[baseAsset] || 0;
+      await updateAccountBalances();
+      let rawQty = quantity || availableBalances[baseAsset] || 0;
 
-      if (sellQty <= 0) {
+      if (rawQty <= 0) {
         return res.status(400).json({ success: false, error: `No available ${baseAsset} balance to sell.` });
       }
 
-      // Format quantity to prevent precision overflow errors
-      queryParams += `&quantity=${sellQty}`;
+      // Format quantity cleanly to respect Binance LOT_SIZE step rules
+      const formattedQty = formatQuantity(symUpper, rawQty);
+      queryParams += `&quantity=${formattedQty}`;
     } else {
-      const tradeAmount = usdtAmount || config.tradeAmountUsdt;
       queryParams += `&quoteOrderQty=${tradeAmount}`;
     }
 
@@ -591,6 +607,7 @@ app.use(express.static("public"));
 
 (async () => {
   await initDatabase();
+  await fetchExchangeInfo();
   await updateAccountBalances();
   setInterval(updateAccountBalances, 15000);
   await bootstrapHistoricalData();
