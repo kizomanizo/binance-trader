@@ -613,6 +613,11 @@
           <input type="number" id="tradeAmountInput" min="1" step="0.5" placeholder="Strategy default" />
           <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">Prefills the strategy default. Change it to size this trade only.</div>
         </div>
+        <div class="form-group" id="tradeSellQtyGroup" style="display: none">
+          <label>Sell Quantity (optional)</label>
+          <input type="number" id="tradeSellQtyInput" min="0" step="any" placeholder="Leave empty to sell 100%" />
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">Empty sells the full free balance and converts leftover dust to BNB.</div>
+        </div>
         <div class="form-group">
           <label>Trading Password Required</label>
           <input type="password" id="tradePasswordInput" placeholder="Enter password" />
@@ -664,6 +669,12 @@
         <div class="form-group">
           <label>Stop Loss (%)</label>
           <input type="number" id="cfg-stopLoss" step="0.1" min="0.1" placeholder="2.0" />
+        </div>
+
+        <div class="form-group">
+          <label>Taker Fee (%)</label>
+          <input type="number" id="cfg-takerFee" step="0.025" min="0" placeholder="0.1" />
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">0.1 standard, 0.075 with BNB fee discount. Used to keep SALE alerts net of fees.</div>
         </div>
 
         <div class="form-group">
@@ -1011,6 +1022,7 @@
             document.getElementById("cfg-cooldown").value = data.config.cooldownMinutes;
             document.getElementById("cfg-takeProfit").value = data.config.takeProfitPercent;
             document.getElementById("cfg-stopLoss").value = data.config.stopLossPercent;
+            document.getElementById("cfg-takerFee").value = data.config.takerFeePercent ?? 0.1;
           }
         } catch (err) {
           console.error("Settings load error:", err);
@@ -1038,6 +1050,7 @@
           cooldownMinutes: parseFloat(document.getElementById("cfg-cooldown").value),
           takeProfitPercent: parseFloat(document.getElementById("cfg-takeProfit").value),
           stopLossPercent: parseFloat(document.getElementById("cfg-stopLoss").value),
+          takerFeePercent: parseFloat(document.getElementById("cfg-takerFee").value),
         };
 
         try {
@@ -1098,7 +1111,7 @@
         });
       }
 
-      function showConfirmationWithPassword(title, message, amountOptions = null) {
+      function showConfirmationWithPassword(title, message, extras = null) {
         return new Promise((resolve) => {
           const modal = document.getElementById("confirmModal");
           const confirmBtn = document.getElementById("modalConfirm");
@@ -1106,18 +1119,25 @@
           const passInput = document.getElementById("tradePasswordInput");
           const amountGroup = document.getElementById("tradeAmountGroup");
           const amountInput = document.getElementById("tradeAmountInput");
+          const sellQtyGroup = document.getElementById("tradeSellQtyGroup");
+          const sellQtyInput = document.getElementById("tradeSellQtyInput");
+          const isBuy = extras?.type === "buy";
+          const isSell = extras?.type === "sell";
 
           document.getElementById("modalTitle").textContent = title;
           document.getElementById("modalText").textContent = message;
           passInput.value = "";
+          sellQtyInput.value = "";
 
-          if (amountOptions) {
+          if (isBuy) {
             amountGroup.style.display = "";
-            amountInput.value = formatTradeAmount(amountOptions.defaultAmount ?? tradeAmountUsdt);
+            amountInput.value = formatTradeAmount(extras.defaultAmount ?? tradeAmountUsdt);
           } else {
             amountGroup.style.display = "none";
             amountInput.value = "";
           }
+
+          sellQtyGroup.style.display = isSell ? "" : "none";
 
           const handleConfirm = () => {
             const pwd = passInput.value.trim();
@@ -1128,7 +1148,7 @@
             }
 
             let resolvedAmount = null;
-            if (amountOptions) {
+            if (isBuy) {
               const parsed = parseFloat(amountInput.value);
               if (!Number.isFinite(parsed) || parsed <= 0) {
                 showToast("Invalid Amount", "Enter a buy amount greater than 0 USDT.", "error");
@@ -1138,8 +1158,21 @@
               resolvedAmount = parsed;
             }
 
+            let sellQty = null;
+            let sellAll = isSell;
+            if (isSell && sellQtyInput.value.trim()) {
+              const parsedQty = parseFloat(sellQtyInput.value);
+              if (!Number.isFinite(parsedQty) || parsedQty <= 0) {
+                showToast("Invalid Quantity", "Enter a sell quantity greater than 0, or leave empty to sell 100%.", "error");
+                sellQtyInput.focus();
+                return;
+              }
+              sellQty = parsedQty;
+              sellAll = false;
+            }
+
             modal.classList.remove("active");
-            resolve({ password: pwd, amount: resolvedAmount });
+            resolve({ password: pwd, amount: resolvedAmount, sellQty, sellAll });
             cleanup();
           };
 
@@ -1161,12 +1194,14 @@
             cancelBtn.removeEventListener("click", handleCancel);
             passInput.removeEventListener("keydown", handleKeydown);
             amountInput.removeEventListener("keydown", handleKeydown);
+            sellQtyInput.removeEventListener("keydown", handleKeydown);
           };
 
           confirmBtn.addEventListener("click", handleConfirm);
           cancelBtn.addEventListener("click", handleCancel);
           passInput.addEventListener("keydown", handleKeydown);
           amountInput.addEventListener("keydown", handleKeydown);
+          sellQtyInput.addEventListener("keydown", handleKeydown);
           modal.classList.add("active");
           passInput.focus();
         });
@@ -1253,7 +1288,7 @@
 
             if (m.rsi !== null && m.rsi <= data.config.rsiOversold && m.volSurge && m.canBuy) {
               renderAlertCard(m.symbol, m.price, m.rsi, "BUY");
-            } else if (m.rsi !== null && m.rsi >= data.config.rsiOverbought && m.canSell) {
+            } else if (m.sellSignal && m.canSell) {
               renderAlertCard(m.symbol, m.price, m.rsi, "SELL");
             }
           });
@@ -1271,18 +1306,16 @@
         const defaultBuyAmount = amount ?? tradeAmountUsdt;
         const confirmMessage =
           isSell || sellAll
-            ? `Execute MARKET SELL for 100% of your available ${symbol.toUpperCase()} balance?`
+            ? `Execute MARKET SELL for ${symbol.toUpperCase()}? Leave quantity empty to clear the full free balance (leftover dust is converted to BNB).`
             : `Execute a MARKET BUY for ${symbol.toUpperCase()}? Default size is $${formatTradeAmount(defaultBuyAmount)} USDT — change it below for this trade only.`;
 
-        const confirmation = await showConfirmationWithPassword(
-          confirmTitle,
-          confirmMessage,
-          isSell || sellAll ? null : { defaultAmount: defaultBuyAmount },
-        );
+        const confirmation = await showConfirmationWithPassword(confirmTitle, confirmMessage, isSell || sellAll ? { type: "sell" } : { type: "buy", defaultAmount: defaultBuyAmount });
         if (!confirmation?.password) return;
 
         const password = confirmation.password;
         const buyAmount = confirmation.amount ?? defaultBuyAmount;
+        const shouldSellAll = isSell && confirmation.sellAll !== false;
+        const sellQty = confirmation.sellQty || null;
 
         const btn = alertId ? document.getElementById(`btn-${alertId}`) : null;
         const originalText = btn ? btn.innerText : "";
@@ -1299,7 +1332,8 @@
             symbol,
             side,
             password,
-            sellAll: isSell || sellAll,
+            sellAll: shouldSellAll,
+            quantity: !shouldSellAll ? sellQty : undefined,
             usdtAmount: !isSell ? buyAmount : undefined,
           };
 
