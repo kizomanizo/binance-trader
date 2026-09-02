@@ -560,7 +560,7 @@
         <div style="font-weight: 700; margin-bottom: 1rem">⚡ Recent Strategy Alerts</div>
         <div id="logs-list">
           <div class="empty-logs" style="color: var(--text-muted); font-size: 0.85rem; font-style: italic">
-            Listening for triggers... Alerts will show BUY signals when USDT ≥ $5.50 and SELL signals when holding position ≥ $5.00.
+            Listening for triggers... Alerts will show BUY signals when USDT ≥ $<span id="empty-buy-threshold">5.50</span> and SELL signals when holding position ≥ $5.00.
           </div>
         </div>
         <div class="logs-pager" id="logs-pager" style="display: none">
@@ -606,6 +606,11 @@
       <div class="modal">
         <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-yellow); margin-bottom: 0.5rem" id="modalTitle">Confirm Action</div>
         <div style="color: var(--text-muted); margin-bottom: 1.25rem" id="modalText"></div>
+        <div class="form-group" id="tradeAmountGroup" style="display: none">
+          <label>Buy Amount (USDT)</label>
+          <input type="number" id="tradeAmountInput" min="1" step="0.5" placeholder="Strategy default" />
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">Prefills the strategy default. Change it to size this trade only.</div>
+        </div>
         <div class="form-group">
           <label>Trading Password Required</label>
           <input type="password" id="tradePasswordInput" placeholder="Enter password" />
@@ -673,6 +678,29 @@
       let currentOutcomePage = 1;
       let persistedAlerts = [];
       let tradeOutcomes = [];
+      let tradeAmountUsdt = 5.5;
+
+      function formatTradeAmount(amount = tradeAmountUsdt) {
+        const n = parseFloat(amount);
+        return Number.isFinite(n) ? n.toFixed(2) : "5.50";
+      }
+
+      function syncTradeAmount(amount) {
+        const n = parseFloat(amount);
+        if (!Number.isFinite(n) || n <= 0) return false;
+        if (n === tradeAmountUsdt) return false;
+        tradeAmountUsdt = n;
+        return true;
+      }
+
+      function updateBuyButtonLabels() {
+        const label = `BUY $${formatTradeAmount()}`;
+        document.querySelectorAll('[id^="buybtn-"]').forEach((btn) => {
+          if (btn.innerText.startsWith("BUY $")) btn.innerText = label;
+        });
+        const emptyThreshold = document.getElementById("empty-buy-threshold");
+        if (emptyThreshold) emptyThreshold.textContent = formatTradeAmount();
+      }
 
       function showToast(title, message, type = "info", duration = 4000) {
         const container = document.getElementById("toast-container");
@@ -894,7 +922,7 @@
         if (pageAlerts.length === 0) {
           logsList.innerHTML = `
           <div class="empty-logs" style="color:var(--text-muted); font-size:0.85rem; font-style:italic;">
-            Listening for triggers... Alerts will show BUY signals when USDT ≥ $5.50 and SELL signals when holding position ≥ $5.00.
+            Listening for triggers... Alerts will show BUY signals when USDT ≥ $${formatTradeAmount()} and SELL signals when holding position ≥ $5.00.
           </div>
         `;
           pager.style.display = "none";
@@ -922,7 +950,7 @@
               isExecuted
                 ? `<button class="btn-executed" disabled>✓ EXECUTED</button>`
                 : alert.action === "BUY"
-                  ? `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'BUY', 5.50, '${alert.id}')" class="btn-buy" style="padding:0.4rem 0.8rem;">BUY $5.50</button>`
+                  ? `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'BUY', null, '${alert.id}')" class="btn-buy" style="padding:0.4rem 0.8rem;">BUY $${formatTradeAmount()}</button>`
                   : `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'SELL', null, '${alert.id}', true)" class="btn-sell" style="padding:0.4rem 0.8rem;">SELL NOW</button>`
             }
           </div>
@@ -1004,6 +1032,10 @@
           if (data.success) {
             showToast("Settings Saved", "Strategy parameters persisted to SQLite!", "success");
             closeSettingsModal();
+            if (syncTradeAmount(data.config?.tradeAmountUsdt ?? settings.tradeAmountUsdt)) {
+              updateBuyButtonLabels();
+              renderAlertPage(currentAlertPage);
+            }
             updateDashboard();
           } else {
             showToast("Save Failed", data.error || "Incorrect password", "error");
@@ -1027,9 +1059,9 @@
         const unlockBtn = document.getElementById("unlock-btn");
 
         if (!isManualUnlocked) {
-          const password = await showConfirmationWithPassword("Enable Impulse Trading Mode", "This will temporarily reveal manual BUY/SELL buttons across all cards.");
+          const confirmation = await showConfirmationWithPassword("Enable Impulse Trading Mode", "This will temporarily reveal manual BUY/SELL buttons across all cards.");
 
-          if (password) {
+          if (confirmation?.password) {
             isManualUnlocked = true;
             unlockBtn.innerText = "🔒 Lock Trade Controls";
             unlockBtn.classList.add("unlocked");
@@ -1047,21 +1079,48 @@
         });
       }
 
-      function showConfirmationWithPassword(title, message) {
+      function showConfirmationWithPassword(title, message, amountOptions = null) {
         return new Promise((resolve) => {
           const modal = document.getElementById("confirmModal");
           const confirmBtn = document.getElementById("modalConfirm");
           const cancelBtn = document.getElementById("modalCancel");
           const passInput = document.getElementById("tradePasswordInput");
+          const amountGroup = document.getElementById("tradeAmountGroup");
+          const amountInput = document.getElementById("tradeAmountInput");
 
           document.getElementById("modalTitle").textContent = title;
           document.getElementById("modalText").textContent = message;
           passInput.value = "";
 
+          if (amountOptions) {
+            amountGroup.style.display = "";
+            amountInput.value = formatTradeAmount(amountOptions.defaultAmount ?? tradeAmountUsdt);
+          } else {
+            amountGroup.style.display = "none";
+            amountInput.value = "";
+          }
+
           const handleConfirm = () => {
             const pwd = passInput.value.trim();
+            if (!pwd) {
+              showToast("Password Required", "Please enter your trading password.", "error");
+              passInput.focus();
+              return;
+            }
+
+            let resolvedAmount = null;
+            if (amountOptions) {
+              const parsed = parseFloat(amountInput.value);
+              if (!Number.isFinite(parsed) || parsed <= 0) {
+                showToast("Invalid Amount", "Enter a buy amount greater than 0 USDT.", "error");
+                amountInput.focus();
+                return;
+              }
+              resolvedAmount = parsed;
+            }
+
             modal.classList.remove("active");
-            resolve(pwd);
+            resolve({ password: pwd, amount: resolvedAmount });
             cleanup();
           };
 
@@ -1082,11 +1141,13 @@
             confirmBtn.removeEventListener("click", handleConfirm);
             cancelBtn.removeEventListener("click", handleCancel);
             passInput.removeEventListener("keydown", handleKeydown);
+            amountInput.removeEventListener("keydown", handleKeydown);
           };
 
           confirmBtn.addEventListener("click", handleConfirm);
           cancelBtn.addEventListener("click", handleCancel);
           passInput.addEventListener("keydown", handleKeydown);
+          amountInput.addEventListener("keydown", handleKeydown);
           modal.classList.add("active");
           passInput.focus();
         });
@@ -1107,6 +1168,11 @@
           const grid = document.getElementById("market-grid");
 
           if (!data.markets) return;
+
+          if (data.config && syncTradeAmount(data.config.tradeAmountUsdt)) {
+            updateBuyButtonLabels();
+            renderAlertPage(currentAlertPage);
+          }
 
           data.markets.forEach((m) => {
             if (m.history && charts[m.symbol]) {
@@ -1140,7 +1206,7 @@
                   <span id="surge-${m.symbol}">No</span>
                 </div>
                 <div class="btn-group" id="btngroup-${m.symbol}">
-                  <button id="buybtn-${m.symbol}" onclick="executeInAppTrade('${m.symbol}', 'BUY', 5.50)" class="btn-buy">BUY $5.50</button>
+                  <button id="buybtn-${m.symbol}" onclick="executeInAppTrade('${m.symbol}', 'BUY')" class="btn-buy">BUY $${formatTradeAmount()}</button>
                   <button id="sellbtn-${m.symbol}" onclick="executeInAppTrade('${m.symbol}', 'SELL', null, null, true)" class="btn-sell">SELL</button>
                 </div>
               </div>
@@ -1183,13 +1249,21 @@
         const isSell = side.toUpperCase() === "SELL";
         const confirmTitle = `Execute ${side} Order`;
 
+        const defaultBuyAmount = amount ?? tradeAmountUsdt;
         const confirmMessage =
           isSell || sellAll
             ? `Execute MARKET SELL for 100% of your available ${symbol.toUpperCase()} balance?`
-            : `Execute a MARKET BUY order for $${amount || 5.5} USDT worth of ${symbol.toUpperCase()}?`;
+            : `Execute a MARKET BUY for ${symbol.toUpperCase()}? Default size is $${formatTradeAmount(defaultBuyAmount)} USDT — change it below for this trade only.`;
 
-        const password = await showConfirmationWithPassword(confirmTitle, confirmMessage);
-        if (!password) return;
+        const confirmation = await showConfirmationWithPassword(
+          confirmTitle,
+          confirmMessage,
+          isSell || sellAll ? null : { defaultAmount: defaultBuyAmount },
+        );
+        if (!confirmation?.password) return;
+
+        const password = confirmation.password;
+        const buyAmount = confirmation.amount ?? defaultBuyAmount;
 
         const btn = alertId ? document.getElementById(`btn-${alertId}`) : null;
         const originalText = btn ? btn.innerText : "";
@@ -1207,7 +1281,7 @@
             side,
             password,
             sellAll: isSell || sellAll,
-            usdtAmount: !isSell ? amount || 5.5 : undefined,
+            usdtAmount: !isSell ? buyAmount : undefined,
           };
 
           const res = await fetch("api/trade", {
@@ -1225,7 +1299,7 @@
             timestamp: Date.now(),
             symbol,
             side,
-            amount: data.details?.cummulativeQuoteQty ? parseFloat(data.details.cummulativeQuoteQty) : amount || 0,
+            amount: data.details?.cummulativeQuoteQty ? parseFloat(data.details.cummulativeQuoteQty) : isSell ? 0 : buyAmount,
             status: data.success ? "SUCCESS" : "FAILED",
             outcome: data.success ? `Order #${data.orderId}` : data.error || "Unknown failure",
             orderId: data.orderId || null,
@@ -1269,7 +1343,7 @@
             timestamp: Date.now(),
             symbol,
             side,
-            amount: amount || 0,
+            amount: isSell ? 0 : buyAmount,
             status: "ERROR",
             outcome: err.message || "Network error",
             orderId: null,
