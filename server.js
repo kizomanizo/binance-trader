@@ -453,11 +453,6 @@ function connectMultiStreamWS() {
                 target.lastSignalTime = now;
                 target.lastStopLossPnl = sellSignal.netPnl;
               }
-            } else if (sellSignal?.type === "SELL") {
-              sendTelegramAlert(
-                `🚨 <b>SELL SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Holding Value:</b> $${currentAssetUsdVal.toFixed(2)} USD`,
-              );
-              target.lastSignalTime = now;
             } else if (target.lastStopLossPnl !== null && (sellSignal === null || sellSignal.netPnl > -(config.stopLossPercent || 2.0))) {
               target.lastStopLossPnl = null;
             }
@@ -729,9 +724,7 @@ app.post("/api/trade", express.json(), async (req, res) => {
           `<b>Amount:</b> $${executedUsdt.toFixed(2)} USDT (${executedQty} ${baseAsset})\n` +
           `<b>Executed Price:</b> $${executedPrice}\n` +
           (economics.commissionUsdt || economics.baseCommission
-            ? `<b>Fees:</b> $${economics.commissionUsdt.toFixed(4)} USDT` +
-              (economics.baseCommission ? ` + ${economics.baseCommission} ${baseAsset}` : "") +
-              `\n`
+            ? `<b>Fees:</b> $${economics.commissionUsdt.toFixed(4)} USDT` + (economics.baseCommission ? ` + ${economics.baseCommission} ${baseAsset}` : "") + `\n`
             : "") +
           (dustConverted ? `<b>Dust:</b> leftover ${baseAsset} converted to BNB\n` : "") +
           `<b>Order ID:</b> <code>${result.orderId}</code>`,
