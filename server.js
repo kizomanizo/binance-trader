@@ -213,12 +213,16 @@ async function updateAccountBalances() {
     });
 
     const data = await response.json();
+
     if (data.balances) {
       data.balances.forEach((b) => {
         const free = parseFloat(b.free);
         if (free > 0) availableBalances[b.asset] = free;
         else delete availableBalances[b.asset];
       });
+    } else {
+      // Print Binance rejection message directly in terminal logs
+      console.error("[BINANCE ACCOUNT API ERROR]:", data);
     }
   } catch (err) {
     console.error("Failed to update background balances:", err.message);
