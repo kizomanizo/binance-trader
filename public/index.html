@@ -440,6 +440,8 @@
         padding: 1.75rem;
         max-width: 440px;
         width: 90%;
+        max-height: 90vh;
+        overflow-y: auto;
       }
 
       .form-group {
@@ -649,6 +651,19 @@
         <div class="form-group">
           <label>Cooldown Period (Minutes)</label>
           <input type="number" id="cfg-cooldown" step="1" placeholder="5" />
+        </div>
+
+        <div class="form-group">
+          <label>Take Profit (%)</label>
+          <input type="number" id="cfg-takeProfit" step="0.1" min="0.1" placeholder="1.5" />
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">
+            Round-trip Binance fees are ~0.2% (~0.15% with BNB). Keep this above that floor.
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Stop Loss (%)</label>
+          <input type="number" id="cfg-stopLoss" step="0.1" min="0.1" placeholder="2.0" />
         </div>
 
         <div class="form-group">
@@ -994,6 +1009,8 @@
             document.getElementById("cfg-volumeSurge").value = data.config.volumeSurgeMultiplier;
             document.getElementById("cfg-tradeAmount").value = data.config.tradeAmountUsdt;
             document.getElementById("cfg-cooldown").value = data.config.cooldownMinutes;
+            document.getElementById("cfg-takeProfit").value = data.config.takeProfitPercent;
+            document.getElementById("cfg-stopLoss").value = data.config.stopLossPercent;
           }
         } catch (err) {
           console.error("Settings load error:", err);
@@ -1019,6 +1036,8 @@
           volumeSurgeMultiplier: parseFloat(document.getElementById("cfg-volumeSurge").value),
           tradeAmountUsdt: parseFloat(document.getElementById("cfg-tradeAmount").value),
           cooldownMinutes: parseFloat(document.getElementById("cfg-cooldown").value),
+          takeProfitPercent: parseFloat(document.getElementById("cfg-takeProfit").value),
+          stopLossPercent: parseFloat(document.getElementById("cfg-stopLoss").value),
         };
 
         try {
