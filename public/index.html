@@ -1,875 +1,887 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Binance Micro-Trader Terminal</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <style>
-    :root {
-      --bg-dark: #0b0e11;
-      --card-bg: #1e2329;
-      --border-color: #2b313a;
-      --accent-yellow: #f0b90b;
-      --green-up: #0ecb81;
-      --red-down: #f6465d;
-      --text-muted: #848e9c;
-    }
-
-    body {
-      font-family: system-ui, -apple-system, sans-serif;
-      background: var(--bg-dark);
-      color: #eaecef;
-      margin: 0;
-      padding: 2rem;
-    }
-
-    header {
-      text-align: center;
-      margin-bottom: 2rem;
-    }
-
-    h1 {
-      color: var(--accent-yellow);
-      margin: 0 0 0.5rem 0;
-      font-size: 2rem;
-    }
-
-    p.subtitle {
-      color: var(--text-muted);
-      margin: 0 0 1rem 0;
-      font-size: 0.95rem;
-    }
-
-    .override-bar {
-      display: flex;
-      justify-content: center;
-      gap: 0.75rem;
-      margin-top: 0.5rem;
-    }
-
-    .override-btn {
-      background: rgba(240, 185, 11, 0.15);
-      border: 1px solid var(--accent-yellow);
-      color: var(--accent-yellow);
-      padding: 0.4rem 1rem;
-      border-radius: 20px;
-      font-size: 0.85rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s ease;
-    }
-
-    .override-btn.unlocked {
-      background: var(--red-down);
-      border-color: var(--red-down);
-      color: #fff;
-    }
-
-    .settings-btn {
-      background: rgba(255, 255, 255, 0.08);
-      border: 1px solid var(--border-color);
-      color: #eaecef;
-      padding: 0.4rem 1rem;
-      border-radius: 20px;
-      font-size: 0.85rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s ease;
-    }
-
-    .settings-btn:hover {
-      background: rgba(255, 255, 255, 0.15);
-    }
-
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
-    }
-
-    .dashboard-top {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1.25rem;
-      margin-bottom: 2rem;
-    }
-
-    @media (max-width: 768px) {
-      .dashboard-top {
-        grid-template-columns: 1fr;
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Binance Micro-Trader Terminal</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+      :root {
+        --bg-dark: #0b0e11;
+        --card-bg: #1e2329;
+        --border-color: #2b313a;
+        --accent-yellow: #f0b90b;
+        --green-up: #0ecb81;
+        --red-down: #f6465d;
+        --text-muted: #848e9c;
       }
-    }
 
-    .panel-card {
-      background: var(--card-bg);
-      border: 1px solid var(--border-color);
-      border-radius: 12px;
-      padding: 1.25rem;
-    }
+      body {
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+        background: var(--bg-dark);
+        color: #eaecef;
+        margin: 0;
+        padding: 2rem;
+      }
 
-    .panel-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-weight: 700;
-      margin-bottom: 1rem;
-      color: var(--accent-yellow);
-    }
+      header {
+        text-align: center;
+        margin-bottom: 2rem;
+      }
 
-    .time-toggles {
-      display: flex;
-      gap: 0.4rem;
-    }
+      h1 {
+        color: var(--accent-yellow);
+        margin: 0 0 0.5rem 0;
+        font-size: 2rem;
+      }
 
-    .time-btn {
-      background: #2b313a;
-      color: var(--text-muted);
-      border: none;
-      padding: 0.3rem 0.6rem;
-      border-radius: 4px;
-      font-size: 0.75rem;
-      cursor: pointer;
-      font-weight: 600;
-    }
+      p.subtitle {
+        color: var(--text-muted);
+        margin: 0 0 1rem 0;
+        font-size: 0.95rem;
+      }
 
-    .time-btn.active {
-      background: var(--accent-yellow);
-      color: #000;
-    }
+      .override-bar {
+        display: flex;
+        justify-content: center;
+        gap: 0.75rem;
+        margin-top: 0.5rem;
+      }
 
-    .pnl-value {
-      font-size: 2rem;
-      font-weight: 800;
-      margin: 0.5rem 0;
-    }
+      .override-btn {
+        background: rgba(240, 185, 11, 0.15);
+        border: 1px solid var(--accent-yellow);
+        color: var(--accent-yellow);
+        padding: 0.4rem 1rem;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
 
-    .holdings-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.85rem;
-    }
+      .override-btn.unlocked {
+        background: var(--red-down);
+        border-color: var(--red-down);
+        color: #fff;
+      }
 
-    .holdings-table th,
-    .holdings-table td {
-      padding: 0.5rem 0;
-      text-align: left;
-      border-bottom: 1px solid var(--border-color);
-    }
+      .settings-btn {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--border-color);
+        color: #eaecef;
+        padding: 0.4rem 1rem;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
 
-    .holdings-table th {
-      color: var(--text-muted);
-    }
+      .settings-btn:hover {
+        background: rgba(255, 255, 255, 0.15);
+      }
 
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      gap: 1.25rem;
-      margin-bottom: 2.5rem;
-    }
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
 
-    .card {
-      background: var(--card-bg);
-      border-radius: 12px;
-      padding: 1.25rem;
-      border: 1px solid var(--border-color);
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-    }
+      .dashboard-top {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.25rem;
+        margin-bottom: 2rem;
+      }
 
-    .symbol {
-      font-size: 1.2rem;
-      font-weight: 700;
-    }
+      @media (max-width: 768px) {
+        .dashboard-top {
+          grid-template-columns: 1fr;
+        }
+      }
 
-    .badge-interval {
-      background: rgba(240, 185, 11, 0.15);
-      color: var(--accent-yellow);
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 0.75rem;
-      font-weight: 600;
-    }
+      .panel-card {
+        background: var(--card-bg);
+        border: 1px solid var(--border-color);
+        border-radius: 12px;
+        padding: 1.25rem;
+      }
 
-    .price {
-      font-size: 1.7rem;
-      font-weight: 700;
-      color: var(--green-up);
-      margin: 0.5rem 0;
-    }
+      .panel-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-weight: 700;
+        margin-bottom: 1rem;
+        color: var(--accent-yellow);
+      }
 
-    .chart-container {
-      height: 50px;
-      margin: 0.5rem 0;
-    }
+      .time-toggles {
+        display: flex;
+        gap: 0.4rem;
+      }
 
-    .metrics {
-      border-top: 1px solid var(--border-color);
-      padding-top: 0.75rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.4rem;
-    }
+      .time-btn {
+        background: #2b313a;
+        color: var(--text-muted);
+        border: none;
+        padding: 0.3rem 0.6rem;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        cursor: pointer;
+        font-weight: 600;
+      }
 
-    .metric-row {
-      display: flex;
-      justify-content: space-between;
-      font-size: 0.85rem;
-      color: var(--text-muted);
-    }
+      .time-btn.active {
+        background: var(--accent-yellow);
+        color: #000;
+      }
 
-    .rsi-val {
-      font-weight: 700;
-      padding: 2px 6px;
-      border-radius: 4px;
-    }
+      .pnl-value {
+        font-size: 2rem;
+        font-weight: 800;
+        margin: 0.5rem 0;
+      }
 
-    .rsi-neutral {
-      color: #eaecef;
-    }
+      .holdings-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+      }
 
-    .rsi-oversold {
-      background: rgba(14, 203, 129, 0.2);
-      color: var(--green-up);
-    }
+      .holdings-table th,
+      .holdings-table td {
+        padding: 0.5rem 0;
+        text-align: left;
+        border-bottom: 1px solid var(--border-color);
+      }
 
-    .rsi-overbought {
-      background: rgba(246, 70, 93, 0.2);
-      color: var(--red-down);
-    }
+      .holdings-table th {
+        color: var(--text-muted);
+      }
 
-    .btn-group {
-      display: none;
-      gap: 0.5rem;
-      margin-top: 0.75rem;
-    }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 1.25rem;
+        margin-bottom: 2.5rem;
+      }
 
-    .btn-group.visible {
-      display: flex;
-    }
+      .card {
+        background: var(--card-bg);
+        border-radius: 12px;
+        padding: 1.25rem;
+        border: 1px solid var(--border-color);
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
 
-    .btn-buy {
-      flex: 1;
-      background: var(--green-up);
-      color: #000;
-      border: none;
-      font-weight: 700;
-      font-size: 0.85rem;
-      padding: 0.6rem;
-      border-radius: 6px;
-      cursor: pointer;
-    }
+      .symbol {
+        font-size: 1.2rem;
+        font-weight: 700;
+      }
 
-    .btn-sell {
-      flex: 1;
-      background: var(--red-down);
-      color: #fff;
-      border: none;
-      font-weight: 700;
-      font-size: 0.85rem;
-      padding: 0.6rem;
-      border-radius: 6px;
-      cursor: pointer;
-    }
+      .badge-interval {
+        background: rgba(240, 185, 11, 0.15);
+        color: var(--accent-yellow);
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 600;
+      }
 
-    .btn-buy:disabled,
-    .btn-sell:disabled {
-      opacity: 0.3;
-      cursor: not-allowed;
-    }
+      .price {
+        font-size: 1.7rem;
+        font-weight: 700;
+        color: var(--green-up);
+        margin: 0.5rem 0;
+      }
 
-    .logs-container {
-      background: var(--card-bg);
-      border-radius: 12px;
-      padding: 1.25rem;
-      border: 1px solid var(--border-color);
-    }
+      .chart-container {
+        height: 50px;
+        margin: 0.5rem 0;
+      }
 
-    .log-item {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 0.85rem 1rem;
-      border-radius: 8px;
-      margin-bottom: 0.75rem;
-      font-size: 0.85rem;
-    }
+      .metrics {
+        border-top: 1px solid var(--border-color);
+        padding-top: 0.75rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
 
-    .log-item.buy-alert {
-      background: rgba(14, 203, 129, 0.05);
-      border: 1px solid var(--green-up);
-    }
+      .metric-row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.85rem;
+        color: var(--text-muted);
+      }
 
-    .log-item.sell-alert {
-      background: rgba(246, 70, 93, 0.05);
-      border: 1px solid var(--red-down);
-    }
+      .rsi-val {
+        font-weight: 700;
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
 
-    .log-item.executed {
-      opacity: 0.65;
-      border-style: dashed;
-    }
+      .rsi-neutral {
+        color: #eaecef;
+      }
 
-    .btn-executed {
-      background: var(--border-color) !important;
-      color: var(--green-up) !important;
-      border: 1px solid var(--green-up) !important;
-      cursor: default !important;
-      font-weight: 700;
-      padding: 0.4rem 0.8rem;
-      border-radius: 6px;
-    }
+      .rsi-oversold {
+        background: rgba(14, 203, 129, 0.2);
+        color: var(--green-up);
+      }
 
-    .timestamp-badge {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-      margin-left: 0.5rem;
-    }
+      .rsi-overbought {
+        background: rgba(246, 70, 93, 0.2);
+        color: var(--red-down);
+      }
 
-    .logs-pager {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-top: 0.75rem;
-      gap: 0.75rem;
-      flex-wrap: wrap;
-    }
+      .btn-group {
+        display: none;
+        gap: 0.5rem;
+        margin-top: 0.75rem;
+      }
 
-    .logs-pager button {
-      background: transparent;
-      border: 1px solid var(--border-color);
-      color: #eaecef;
-      padding: 0.5rem 0.85rem;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: background 0.2s ease, border-color 0.2s ease;
-    }
+      .btn-group.visible {
+        display: flex;
+      }
 
-    .logs-pager button:hover:not(:disabled) {
-      background: rgba(255, 255, 255, 0.05);
-      border-color: #6a7380;
-    }
+      .btn-buy {
+        flex: 1;
+        background: var(--green-up);
+        color: #000;
+        border: none;
+        font-weight: 700;
+        font-size: 0.85rem;
+        padding: 0.6rem;
+        border-radius: 6px;
+        cursor: pointer;
+      }
 
-    .logs-pager button:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
+      .btn-sell {
+        flex: 1;
+        background: var(--red-down);
+        color: #fff;
+        border: none;
+        font-weight: 700;
+        font-size: 0.85rem;
+        padding: 0.6rem;
+        border-radius: 6px;
+        cursor: pointer;
+      }
 
-    .logs-pager .page-info {
-      color: var(--text-muted);
-      font-size: 0.85rem;
-    }
+      .btn-buy:disabled,
+      .btn-sell:disabled {
+        opacity: 0.3;
+        cursor: not-allowed;
+      }
 
-    .outcomes-container {
-      background: var(--card-bg);
-      border-radius: 12px;
-      padding: 1.25rem;
-      border: 1px solid var(--border-color);
-      margin-top: 1rem;
-    }
+      .logs-container {
+        background: var(--card-bg);
+        border-radius: 12px;
+        padding: 1.25rem;
+        border: 1px solid var(--border-color);
+      }
 
-    .outcome-table {
-      width: 100%;
-      border-collapse: collapse;
-    }
+      .log-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.85rem 1rem;
+        border-radius: 8px;
+        margin-bottom: 0.75rem;
+        font-size: 0.85rem;
+      }
 
-    .outcome-table th,
-    .outcome-table td {
-      text-align: left;
-      padding: 0.75rem 0.8rem;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-      font-size: 0.84rem;
-    }
+      .log-item.buy-alert {
+        background: rgba(14, 203, 129, 0.05);
+        border: 1px solid var(--green-up);
+      }
 
-    .outcome-table th {
-      color: var(--text-muted);
-      font-weight: 700;
-      font-size: 0.78rem;
-      letter-spacing: 0.02em;
-      text-transform: uppercase;
-    }
+      .log-item.sell-alert {
+        background: rgba(246, 70, 93, 0.05);
+        border: 1px solid var(--red-down);
+      }
 
-    .outcome-status.status-success {
-      color: var(--green-up);
-      font-weight: 700;
-    }
+      .log-item.executed {
+        opacity: 0.65;
+        border-style: dashed;
+      }
 
-    .outcome-status.status-failed {
-      color: var(--red-down);
-      font-weight: 700;
-    }
+      .btn-executed {
+        background: var(--border-color) !important;
+        color: var(--green-up) !important;
+        border: 1px solid var(--green-up) !important;
+        cursor: default !important;
+        font-weight: 700;
+        padding: 0.4rem 0.8rem;
+        border-radius: 6px;
+      }
 
-    .trade-success {
-      background: rgba(14, 203, 129, 0.04);
-    }
+      .timestamp-badge {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        margin-left: 0.5rem;
+      }
 
-    .trade-failed {
-      background: rgba(246, 70, 93, 0.04);
-    }
+      .logs-pager {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 0.75rem;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+      }
 
-    .outcome-table tbody tr:last-child td {
-      border-bottom: none;
-    }
+      .logs-pager button {
+        background: transparent;
+        border: 1px solid var(--border-color);
+        color: #eaecef;
+        padding: 0.5rem 0.85rem;
+        border-radius: 6px;
+        cursor: pointer;
+        transition:
+          background 0.2s ease,
+          border-color 0.2s ease;
+      }
 
-    .modal-overlay {
-      display: none;
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: rgba(0, 0, 0, 0.75);
-      z-index: 2000;
-      justify-content: center;
-      align-items: center;
-    }
+      .logs-pager button:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.05);
+        border-color: #6a7380;
+      }
 
-    .modal-overlay.active {
-      display: flex;
-    }
+      .logs-pager button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
 
-    .modal {
-      background: var(--card-bg);
-      border: 1px solid var(--border-color);
-      border-radius: 12px;
-      padding: 1.75rem;
-      max-width: 440px;
-      width: 90%;
-    }
+      .logs-pager .page-info {
+        color: var(--text-muted);
+        font-size: 0.85rem;
+      }
 
-    .form-group {
-      margin-bottom: 1rem;
-    }
+      .outcomes-container {
+        background: var(--card-bg);
+        border-radius: 12px;
+        padding: 1.25rem;
+        border: 1px solid var(--border-color);
+        margin-top: 1rem;
+      }
 
-    .form-group label {
-      display: block;
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      margin-bottom: 0.35rem;
-    }
+      .outcome-table {
+        width: 100%;
+        border-collapse: collapse;
+      }
 
-    .form-group input {
-      width: 100%;
-      padding: 0.55rem;
-      background: #0b0e11;
-      border: 1px solid var(--border-color);
-      color: #fff;
-      border-radius: 6px;
-      box-sizing: border-box;
-    }
+      .outcome-table th,
+      .outcome-table td {
+        text-align: left;
+        padding: 0.75rem 0.8rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+        font-size: 0.84rem;
+      }
 
-    .toast-container {
-      position: fixed;
-      bottom: 2rem;
-      right: 2rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.75rem;
-      z-index: 1000;
-      pointer-events: none;
-    }
+      .outcome-table th {
+        color: var(--text-muted);
+        font-weight: 700;
+        font-size: 0.78rem;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+      }
 
-    .toast {
-      background: var(--card-bg);
-      border: 1px solid var(--border-color);
-      border-left: 4px solid var(--green-up);
-      border-radius: 8px;
-      padding: 0.85rem 1.1rem;
-      color: #fff;
-      min-width: 280px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      pointer-events: auto;
-    }
+      .outcome-status.status-success {
+        color: var(--green-up);
+        font-weight: 700;
+      }
 
-    .toast.error {
-      border-left-color: var(--red-down);
-    }
+      .outcome-status.status-failed {
+        color: var(--red-down);
+        font-weight: 700;
+      }
 
-    .toast.success {
-      border-left-color: var(--green-up);
-    }
+      .trade-success {
+        background: rgba(14, 203, 129, 0.04);
+      }
 
-    .toast.info {
-      border-left-color: #4a9eff;
-    }
-  </style>
-</head>
+      .trade-failed {
+        background: rgba(246, 70, 93, 0.04);
+      }
 
-<body>
-  <div class="container">
-    <header>
-      <h1>Binance Micro-Trader Terminal</h1>
-      <p class="subtitle">Live 1-Minute Momentum & Portfolio Engine</p>
+      .outcome-table tbody tr:last-child td {
+        border-bottom: none;
+      }
 
-      <div class="override-bar">
-        <button id="unlock-btn" onclick="toggleManualUnlock()" class="override-btn">
-          🔓 Unlock Impulse Trade Controls
-        </button>
-        <button onclick="openSettingsModal()" class="settings-btn">
-          ⚙️ Strategy Settings
-        </button>
+      .modal-overlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.75);
+        z-index: 2000;
+        justify-content: center;
+        align-items: center;
+      }
+
+      .modal-overlay.active {
+        display: flex;
+      }
+
+      .modal {
+        background: var(--card-bg);
+        border: 1px solid var(--border-color);
+        border-radius: 12px;
+        padding: 1.75rem;
+        max-width: 440px;
+        width: 90%;
+      }
+
+      .form-group {
+        margin-bottom: 1rem;
+      }
+
+      .form-group label {
+        display: block;
+        font-size: 0.8rem;
+        color: var(--text-muted);
+        margin-bottom: 0.35rem;
+      }
+
+      .form-group input {
+        width: 100%;
+        padding: 0.55rem;
+        background: #0b0e11;
+        border: 1px solid var(--border-color);
+        color: #fff;
+        border-radius: 6px;
+        box-sizing: border-box;
+      }
+
+      .toast-container {
+        position: fixed;
+        bottom: 2rem;
+        right: 2rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        z-index: 1000;
+        pointer-events: none;
+      }
+
+      .toast {
+        background: var(--card-bg);
+        border: 1px solid var(--border-color);
+        border-left: 4px solid var(--green-up);
+        border-radius: 8px;
+        padding: 0.85rem 1.1rem;
+        color: #fff;
+        min-width: 280px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        pointer-events: auto;
+      }
+
+      .toast.error {
+        border-left-color: var(--red-down);
+      }
+
+      .toast.success {
+        border-left-color: var(--green-up);
+      }
+
+      .toast.info {
+        border-left-color: #4a9eff;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <header>
+        <h1>Binance Micro-Trader Terminal</h1>
+        <p class="subtitle">Live 1-Minute Momentum & Portfolio Engine</p>
+
+        <div class="override-bar">
+          <button id="unlock-btn" onclick="toggleManualUnlock()" class="override-btn">🔓 Unlock Impulse Trade Controls</button>
+          <button onclick="openSettingsModal()" class="settings-btn">⚙️ Strategy Settings</button>
+        </div>
+      </header>
+
+      <div class="dashboard-top">
+        <div class="panel-card">
+          <div class="panel-header">
+            <span>📈 Realized PnL</span>
+            <div class="time-toggles">
+              <button class="time-btn" onclick="fetchPnL('day', this)">24H</button>
+              <button class="time-btn" onclick="fetchPnL('week', this)">7D</button>
+              <button class="time-btn" onclick="fetchPnL('month', this)">30D</button>
+              <button class="time-btn active" onclick="fetchPnL('all', this)">ALL</button>
+            </div>
+          </div>
+          <div class="pnl-value" id="pnl-total-val">$0.00</div>
+          <div style="font-size: 0.8rem; color: var(--text-muted)" id="pnl-summary-sub">Trades: 0 | Volume: $0.00</div>
+          <div id="asset-pnl-list" style="margin-top: 1rem; font-size: 0.85rem"></div>
+        </div>
+
+        <div class="panel-card">
+          <div class="panel-header">
+            <span>💼 Binance Spot Holdings</span>
+            <button class="time-btn" onclick="fetchHoldings()">🔄 Refresh</button>
+          </div>
+          <table class="holdings-table">
+            <thead>
+              <tr>
+                <th>Asset</th>
+                <th>Available</th>
+                <th>Locked</th>
+                <th>Est. USD</th>
+              </tr>
+            </thead>
+            <tbody id="holdings-body">
+              <tr>
+                <td colspan="4" style="color: var(--text-muted)">Loading Spot wallet...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
-    </header>
 
-    <div class="dashboard-top">
-      <div class="panel-card">
-        <div class="panel-header">
-          <span>📈 Realized PnL</span>
-          <div class="time-toggles">
-            <button class="time-btn" onclick="fetchPnL('day', this)">24H</button>
-            <button class="time-btn" onclick="fetchPnL('week', this)">7D</button>
-            <button class="time-btn" onclick="fetchPnL('month', this)">30D</button>
-            <button class="time-btn active" onclick="fetchPnL('all', this)">ALL</button>
+      <div class="grid" id="market-grid"></div>
+
+      <div class="logs-container">
+        <div style="font-weight: 700; margin-bottom: 1rem">⚡ Recent Strategy Alerts</div>
+        <div id="logs-list">
+          <div class="empty-logs" style="color: var(--text-muted); font-size: 0.85rem; font-style: italic">
+            Listening for triggers... Alerts will show BUY signals when USDT ≥ $5.50 and SELL signals when holding position ≥ $5.00.
           </div>
         </div>
-        <div class="pnl-value" id="pnl-total-val">$0.00</div>
-        <div style="font-size:0.8rem; color:var(--text-muted);" id="pnl-summary-sub">
-          Trades: 0 | Volume: $0.00
+        <div class="logs-pager" id="logs-pager" style="display: none">
+          <button id="pager-prev" onclick="changeAlertPage(-1)">← Previous</button>
+          <div class="page-info" id="page-info">Page 1 of 1</div>
+          <button id="pager-next" onclick="changeAlertPage(1)">Next →</button>
         </div>
-        <div id="asset-pnl-list" style="margin-top:1rem; font-size:0.85rem;"></div>
       </div>
 
-      <div class="panel-card">
-        <div class="panel-header">
-          <span>💼 Binance Spot Holdings</span>
-          <button class="time-btn" onclick="fetchHoldings()">🔄 Refresh</button>
+      <div class="outcomes-container">
+        <div style="font-weight: 700; margin-bottom: 0.75rem">💾 Trade Outcome Ledger</div>
+        <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem">
+          Persisted buy/sell actions with success and failure outcomes. A tiny ledger for the trade nerd in all of us.
         </div>
-        <table class="holdings-table">
+        <table class="outcome-table">
           <thead>
             <tr>
-              <th>Asset</th>
-              <th>Available</th>
-              <th>Locked</th>
-              <th>Est. USD</th>
+              <th>When</th>
+              <th>Action</th>
+              <th>Symbol</th>
+              <th>Amount</th>
+              <th>Status</th>
+              <th>Outcome</th>
             </tr>
           </thead>
-          <tbody id="holdings-body">
+          <tbody id="outcomes-body">
             <tr>
-              <td colspan="4" style="color:var(--text-muted);">Loading Spot wallet...</td>
+              <td colspan="6" style="color: var(--text-muted); font-style: italic; padding: 1rem 0">No trade outcomes yet. Execute a BUY or SELL to populate the ledger.</td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <div class="grid" id="market-grid"></div>
+    <div class="toast-container" id="toast-container"></div>
 
-    <div class="logs-container">
-      <div style="font-weight:700; margin-bottom:1rem;">⚡ Recent Strategy Alerts</div>
-      <div id="logs-list">
-        <div class="empty-logs" style="color:var(--text-muted); font-size:0.85rem; font-style:italic;">
-          Listening for triggers... Alerts will show BUY signals when USDT ≥ $5.50 and SELL signals when holding
-          position ≥ $5.00.
+    <div class="modal-overlay" id="confirmModal">
+      <div class="modal">
+        <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-yellow); margin-bottom: 0.5rem" id="modalTitle">Confirm Action</div>
+        <div style="color: var(--text-muted); margin-bottom: 1.25rem" id="modalText"></div>
+        <div class="form-group">
+          <label>Trading Password Required</label>
+          <input type="password" id="tradePasswordInput" placeholder="Enter password" />
+        </div>
+        <div style="display: flex; gap: 0.75rem; justify-content: flex-end">
+          <button class="time-btn" id="modalCancel" style="padding: 0.5rem 1rem">Cancel</button>
+          <button class="time-btn active" id="modalConfirm" style="padding: 0.5rem 1rem">Confirm & Execute</button>
         </div>
       </div>
-      <div class="logs-pager" id="logs-pager" style="display:none;">
-        <button id="pager-prev" onclick="changeAlertPage(-1)">← Previous</button>
-        <div class="page-info" id="page-info">Page 1 of 1</div>
-        <button id="pager-next" onclick="changeAlertPage(1)">Next →</button>
+    </div>
+
+    <div class="modal-overlay" id="settingsModal">
+      <div class="modal">
+        <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-yellow); margin-bottom: 1rem">⚙️ Strategy Settings</div>
+
+        <div class="form-group">
+          <label>RSI Oversold (BUY) Threshold</label>
+          <input type="number" id="cfg-rsiOversold" step="1" placeholder="32" />
+        </div>
+
+        <div class="form-group">
+          <label>RSI Overbought (SELL) Threshold</label>
+          <input type="number" id="cfg-rsiOverbought" step="1" placeholder="70" />
+        </div>
+
+        <div class="form-group">
+          <label>Volume Surge Multiplier (x SMA)</label>
+          <input type="number" id="cfg-volumeSurge" step="0.1" placeholder="1.8" />
+        </div>
+
+        <div class="form-group">
+          <label>Default Trade Amount (USDT)</label>
+          <input type="number" id="cfg-tradeAmount" step="0.5" placeholder="5.50" />
+        </div>
+
+        <div class="form-group">
+          <label>Cooldown Period (Minutes)</label>
+          <input type="number" id="cfg-cooldown" step="1" placeholder="5" />
+        </div>
+
+        <div class="form-group">
+          <label>Trading Password</label>
+          <input type="password" id="settingsPasswordInput" placeholder="Enter password to save" />
+        </div>
+
+        <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 1.25rem">
+          <button class="time-btn" onclick="closeSettingsModal()" style="padding: 0.5rem 1rem">Cancel</button>
+          <button class="time-btn active" onclick="saveSettings()" style="padding: 0.5rem 1rem">Save to SQLite</button>
+        </div>
       </div>
     </div>
 
-    <div class="outcomes-container">
-      <div style="font-weight:700; margin-bottom:0.75rem;">💾 Trade Outcome Ledger</div>
-      <div style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
-        Persisted buy/sell actions with success and failure outcomes. A tiny ledger for the trade nerd in all of us.
-      </div>
-      <table class="outcome-table">
-        <thead>
-          <tr>
-            <th>When</th>
-            <th>Action</th>
-            <th>Symbol</th>
-            <th>Amount</th>
-            <th>Status</th>
-            <th>Outcome</th>
-          </tr>
-        </thead>
-        <tbody id="outcomes-body">
-          <tr>
-            <td colspan="6" style="color:var(--text-muted); font-style:italic; padding:1rem 0;">
-              No trade outcomes yet. Execute a BUY or SELL to populate the ledger.
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
+    <script>
+      const charts = {};
+      let isManualUnlocked = false;
+      const activeAlerts = new Map();
+      const executedAlerts = new Set();
+      const alertStorageKey = "strategyAlerts";
+      const outcomeStorageKey = "tradeOutcomeLedger";
+      const alertsPerPage = 5;
+      const outcomeLimit = 12;
 
-  <div class="toast-container" id="toast-container"></div>
+      let currentAlertPage = 1;
+      let persistedAlerts = [];
+      let tradeOutcomes = [];
 
-  <div class="modal-overlay" id="confirmModal">
-    <div class="modal">
-      <div style="font-size:1.2rem; font-weight:700; color:var(--accent-yellow); margin-bottom:0.5rem;" id="modalTitle">
-        Confirm Action</div>
-      <div style="color:var(--text-muted); margin-bottom:1.25rem;" id="modalText"></div>
-      <div class="form-group">
-        <label>Trading Password Required</label>
-        <input type="password" id="tradePasswordInput" placeholder="Enter password" />
-      </div>
-      <div style="display:flex; gap:0.75rem; justify-content:flex-end;">
-        <button class="time-btn" id="modalCancel" style="padding:0.5rem 1rem;">Cancel</button>
-        <button class="time-btn active" id="modalConfirm" style="padding:0.5rem 1rem;">Confirm & Execute</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="modal-overlay" id="settingsModal">
-    <div class="modal">
-      <div style="font-size:1.2rem; font-weight:700; color:var(--accent-yellow); margin-bottom:1rem;">⚙️ Strategy
-        Settings</div>
-
-      <div class="form-group">
-        <label>RSI Oversold (BUY) Threshold</label>
-        <input type="number" id="cfg-rsiOversold" step="1" placeholder="32" />
-      </div>
-
-      <div class="form-group">
-        <label>RSI Overbought (SELL) Threshold</label>
-        <input type="number" id="cfg-rsiOverbought" step="1" placeholder="70" />
-      </div>
-
-      <div class="form-group">
-        <label>Volume Surge Multiplier (x SMA)</label>
-        <input type="number" id="cfg-volumeSurge" step="0.1" placeholder="1.8" />
-      </div>
-
-      <div class="form-group">
-        <label>Default Trade Amount (USDT)</label>
-        <input type="number" id="cfg-tradeAmount" step="0.5" placeholder="5.50" />
-      </div>
-
-      <div class="form-group">
-        <label>Cooldown Period (Minutes)</label>
-        <input type="number" id="cfg-cooldown" step="1" placeholder="5" />
-      </div>
-
-      <div class="form-group">
-        <label>Trading Password</label>
-        <input type="password" id="settingsPasswordInput" placeholder="Enter password to save" />
-      </div>
-
-      <div style="display:flex; gap:0.75rem; justify-content:flex-end; margin-top:1.25rem;">
-        <button class="time-btn" onclick="closeSettingsModal()" style="padding:0.5rem 1rem;">Cancel</button>
-        <button class="time-btn active" onclick="saveSettings()" style="padding:0.5rem 1rem;">Save to SQLite</button>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    const charts = {};
-    let isManualUnlocked = false;
-    const activeAlerts = new Map();
-    const executedAlerts = new Set();
-    const alertStorageKey = 'strategyAlerts';
-    const outcomeStorageKey = 'tradeOutcomeLedger';
-    const alertsPerPage = 5;
-    const outcomeLimit = 12;
-
-    let currentAlertPage = 1;
-    let persistedAlerts = [];
-    let tradeOutcomes = [];
-
-    function showToast(title, message, type = 'info', duration = 4000) {
-      const container = document.getElementById('toast-container');
-      const toast = document.createElement('div');
-      toast.className = `toast ${type}`;
-      toast.innerHTML = `
+      function showToast(title, message, type = "info", duration = 4000) {
+        const container = document.getElementById("toast-container");
+        const toast = document.createElement("div");
+        toast.className = `toast ${type}`;
+        toast.innerHTML = `
         <div>
           <div style="font-weight:700; font-size:0.85rem;">${title}</div>
           <div style="font-size:0.8rem; color:var(--text-muted); margin-top:2px;">${message}</div>
         </div>
       `;
-      container.appendChild(toast);
-      if (duration > 0) setTimeout(() => toast.remove(), duration);
-      return toast;
-    }
+        container.appendChild(toast);
+        if (duration > 0) setTimeout(() => toast.remove(), duration);
+        return toast;
+      }
 
-    async function fetchHoldings() {
-      try {
-        const res = await fetch('api/holdings');
-        const data = await res.json();
-        const tbody = document.getElementById('holdings-body');
+      async function fetchHoldings() {
+        const tbody = document.getElementById("holdings-body");
 
-        if (data.success && data.balances) {
-          tbody.innerHTML = data.balances.map(b => `
-            <tr>
-              <td style="font-weight:700;">${b.asset}</td>
-              <td>${b.free}</td>
-              <td style="color:var(--text-muted);">${b.locked}</td>
-              <td style="font-weight:700; color:var(--green-up);">$${b.usdValue}</td>
-            </tr>
-          `).join('');
-        } else {
-          tbody.innerHTML = `<tr><td colspan="4" style="color:var(--red-down);">${data.error || 'Failed to load holdings'}</td></tr>`;
+        try {
+          const res = await fetch("api/holdings");
+          const data = await res.json();
+
+          if (data.success && data.balances && data.balances.length > 0) {
+            tbody.innerHTML = data.balances
+              .map(
+                (b) => `
+        <tr>
+          <td style="font-weight:700;">${b.asset}</td>
+          <td>${b.free}</td>
+          <td style="color:var(--text-muted);">${b.locked}</td>
+          <td style="font-weight:700; color:var(--green-up);">$${b.usdValue}</td>
+        </tr>
+      `,
+              )
+              .join("");
+          } else {
+            tbody.innerHTML = `
+        <tr>
+          <td colspan="4" style="color:var(--text-muted); text-align:center; padding:1rem;">
+            No tracked spot balances found (> 0.0001).
+          </td>
+        </tr>`;
+          }
+        } catch (err) {
+          console.error("Holdings error:", err);
+          if (tbody) {
+            tbody.innerHTML = `<tr><td colspan="4" style="color:var(--red-down);">Connection Error: Unable to fetch holdings.</td></tr>`;
+          }
         }
-      } catch (err) {
-        console.error("Holdings error:", err);
-      }
-    }
-
-    async function fetchPnL(tf = 'all', btn = null) {
-      if (btn) {
-        document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
       }
 
-      try {
-        const res = await fetch(`api/pnl?tf=${tf}`);
-        const data = await res.json();
+      async function fetchPnL(tf = "all", btn = null) {
+        if (btn) {
+          document.querySelectorAll(".time-btn").forEach((b) => b.classList.remove("active"));
+          btn.classList.add("active");
+        }
 
-        const valEl = document.getElementById('pnl-total-val');
-        valEl.innerText = `${data.totalRealizedPnl >= 0 ? '+' : ''}$${data.totalRealizedPnl.toFixed(2)}`;
-        valEl.style.color = data.totalRealizedPnl >= 0 ? 'var(--green-up)' : 'var(--red-down)';
+        try {
+          const res = await fetch(`api/pnl?tf=${tf}`);
+          const data = await res.json();
 
-        document.getElementById('pnl-summary-sub').innerText = `Trades: ${data.tradeCount} | Volume: $${data.totalVolumeTraded.toFixed(2)}`;
+          const valEl = document.getElementById("pnl-total-val");
+          valEl.innerText = `${data.totalRealizedPnl >= 0 ? "+" : ""}$${data.totalRealizedPnl.toFixed(2)}`;
+          valEl.style.color = data.totalRealizedPnl >= 0 ? "var(--green-up)" : "var(--red-down)";
 
-        const listEl = document.getElementById('asset-pnl-list');
-        if (data.assets && data.assets.length > 0) {
-          listEl.innerHTML = data.assets.map(a => `
+          document.getElementById("pnl-summary-sub").innerText = `Trades: ${data.tradeCount} | Volume: $${data.totalVolumeTraded.toFixed(2)}`;
+
+          const listEl = document.getElementById("asset-pnl-list");
+          if (data.assets && data.assets.length > 0) {
+            listEl.innerHTML = data.assets
+              .map(
+                (a) => `
             <div style="display:flex; justify-content:space-between; padding:0.25rem 0; border-top:1px solid var(--border-color);">
               <span>${a.symbol}</span>
-              <span style="font-weight:bold; color:${a.realizedPnl >= 0 ? 'var(--green-up)' : 'var(--red-down)'};">
-                ${a.realizedPnl >= 0 ? '+' : ''}$${a.realizedPnl.toFixed(2)}
+              <span style="font-weight:bold; color:${a.realizedPnl >= 0 ? "var(--green-up)" : "var(--red-down)"};">
+                ${a.realizedPnl >= 0 ? "+" : ""}$${a.realizedPnl.toFixed(2)}
               </span>
             </div>
-          `).join('');
-        } else {
-          listEl.innerHTML = `<div style="color:var(--text-muted); font-style:italic;">No closed trade pairs in this timeframe.</div>`;
+          `,
+              )
+              .join("");
+          } else {
+            listEl.innerHTML = `<div style="color:var(--text-muted); font-style:italic;">No closed trade pairs in this timeframe.</div>`;
+          }
+        } catch (err) {
+          console.error("PnL error:", err);
         }
-      } catch (err) {
-        console.error("PnL error:", err);
-      }
-    }
-
-    function formatAlertTime(createdTime) {
-      const now = Date.now();
-      const elapsedSec = Math.floor((now - createdTime) / 1000);
-      const localStr = new Date(createdTime).toLocaleTimeString();
-
-      let agoStr = 'just now';
-      if (elapsedSec >= 60) {
-        const mins = Math.floor(elapsedSec / 60);
-        agoStr = `${mins}m ago`;
-      } else if (elapsedSec > 5) {
-        agoStr = `${elapsedSec}s ago`;
       }
 
-      return `${localStr} <span style="color:var(--accent-yellow);">(${agoStr})</span>`;
-    }
+      function formatAlertTime(createdTime) {
+        const now = Date.now();
+        const elapsedSec = Math.floor((now - createdTime) / 1000);
+        const localStr = new Date(createdTime).toLocaleTimeString();
 
-    function loadPersistedAlerts() {
-      try {
-        const raw = localStorage.getItem(alertStorageKey);
-        persistedAlerts = raw ? JSON.parse(raw) : [];
-        activeAlerts.clear();
-        persistedAlerts.forEach(alert => activeAlerts.set(alert.id, alert.createdTime));
-      } catch (err) {
-        persistedAlerts = [];
-        activeAlerts.clear();
+        let agoStr = "just now";
+        if (elapsedSec >= 60) {
+          const mins = Math.floor(elapsedSec / 60);
+          agoStr = `${mins}m ago`;
+        } else if (elapsedSec > 5) {
+          agoStr = `${elapsedSec}s ago`;
+        }
+
+        return `${localStr} <span style="color:var(--accent-yellow);">(${agoStr})</span>`;
       }
-    }
 
-    function savePersistedAlerts() {
-      localStorage.setItem(alertStorageKey, JSON.stringify(persistedAlerts));
-    }
-
-    function loadTradeOutcomes() {
-      try {
-        const raw = localStorage.getItem(outcomeStorageKey);
-        tradeOutcomes = raw ? JSON.parse(raw) : [];
-      } catch (err) {
-        tradeOutcomes = [];
+      function loadPersistedAlerts() {
+        try {
+          const raw = localStorage.getItem(alertStorageKey);
+          persistedAlerts = raw ? JSON.parse(raw) : [];
+          activeAlerts.clear();
+          persistedAlerts.forEach((alert) => activeAlerts.set(alert.id, alert.createdTime));
+        } catch (err) {
+          persistedAlerts = [];
+          activeAlerts.clear();
+        }
       }
-    }
 
-    function saveTradeOutcomes() {
-      localStorage.setItem(outcomeStorageKey, JSON.stringify(tradeOutcomes));
-    }
+      function savePersistedAlerts() {
+        localStorage.setItem(alertStorageKey, JSON.stringify(persistedAlerts));
+      }
 
-    function addTradeOutcome(entry) {
-      tradeOutcomes.unshift(entry);
-      tradeOutcomes = tradeOutcomes.slice(0, outcomeLimit);
-      saveTradeOutcomes();
-      renderTradeOutcomes();
-    }
+      function loadTradeOutcomes() {
+        try {
+          const raw = localStorage.getItem(outcomeStorageKey);
+          tradeOutcomes = raw ? JSON.parse(raw) : [];
+        } catch (err) {
+          tradeOutcomes = [];
+        }
+      }
 
-    function renderTradeOutcomes() {
-      const tbody = document.getElementById('outcomes-body');
-      if (!tbody) return;
+      function saveTradeOutcomes() {
+        localStorage.setItem(outcomeStorageKey, JSON.stringify(tradeOutcomes));
+      }
 
-      if (tradeOutcomes.length === 0) {
-        tbody.innerHTML = `
+      function addTradeOutcome(entry) {
+        tradeOutcomes.unshift(entry);
+        tradeOutcomes = tradeOutcomes.slice(0, outcomeLimit);
+        saveTradeOutcomes();
+        renderTradeOutcomes();
+      }
+
+      function renderTradeOutcomes() {
+        const tbody = document.getElementById("outcomes-body");
+        if (!tbody) return;
+
+        if (tradeOutcomes.length === 0) {
+          tbody.innerHTML = `
           <tr>
             <td colspan="6" style="color:var(--text-muted); font-style:italic; padding:1rem 0;">
               No trade outcomes yet. Execute a BUY or SELL to populate the ledger.
             </td>
           </tr>
         `;
-        return;
-      }
+          return;
+        }
 
-      tbody.innerHTML = tradeOutcomes
-        .map(o => `
-          <tr class="${o.status === 'SUCCESS' ? 'trade-success' : 'trade-failed'}">
+        tbody.innerHTML = tradeOutcomes
+          .map(
+            (o) => `
+          <tr class="${o.status === "SUCCESS" ? "trade-success" : "trade-failed"}">
             <td>${new Date(o.timestamp).toLocaleTimeString()}</td>
             <td>${o.side}</td>
             <td>${o.symbol}</td>
             <td>$${parseFloat(o.amount).toFixed(2)}</td>
-            <td class="outcome-status ${o.status === 'SUCCESS' ? 'status-success' : 'status-failed'}">
+            <td class="outcome-status ${o.status === "SUCCESS" ? "status-success" : "status-failed"}">
               ${o.status}
             </td>
             <td>${o.outcome}</td>
           </tr>
-        `)
-        .join('');
-    }
+        `,
+          )
+          .join("");
+      }
 
-    function refreshAlertDurations() {
-      activeAlerts.forEach((timestamp, elemId) => {
-        const badge = document.getElementById(`time-${elemId}`);
-        if (badge) badge.innerHTML = formatAlertTime(timestamp);
-      });
-    }
+      function refreshAlertDurations() {
+        activeAlerts.forEach((timestamp, elemId) => {
+          const badge = document.getElementById(`time-${elemId}`);
+          if (badge) badge.innerHTML = formatAlertTime(timestamp);
+        });
+      }
 
-    function renderAlertPage(page = 1) {
-      const logsList = document.getElementById('logs-list');
-      const pager = document.getElementById('logs-pager');
-      const pageInfo = document.getElementById('page-info');
-      const prevBtn = document.getElementById('pager-prev');
-      const nextBtn = document.getElementById('pager-next');
+      function renderAlertPage(page = 1) {
+        const logsList = document.getElementById("logs-list");
+        const pager = document.getElementById("logs-pager");
+        const pageInfo = document.getElementById("page-info");
+        const prevBtn = document.getElementById("pager-prev");
+        const nextBtn = document.getElementById("pager-next");
 
-      if (!logsList || !pager || !pageInfo || !prevBtn || !nextBtn) return;
+        if (!logsList || !pager || !pageInfo || !prevBtn || !nextBtn) return;
 
-      currentAlertPage = Math.max(1, Math.min(page, Math.ceil(persistedAlerts.length / alertsPerPage) || 1));
-      const start = (currentAlertPage - 1) * alertsPerPage;
-      const pageAlerts = persistedAlerts.slice(start, start + alertsPerPage);
+        currentAlertPage = Math.max(1, Math.min(page, Math.ceil(persistedAlerts.length / alertsPerPage) || 1));
+        const start = (currentAlertPage - 1) * alertsPerPage;
+        const pageAlerts = persistedAlerts.slice(start, start + alertsPerPage);
 
-      logsList.innerHTML = '';
-      if (pageAlerts.length === 0) {
-        logsList.innerHTML = `
+        logsList.innerHTML = "";
+        if (pageAlerts.length === 0) {
+          logsList.innerHTML = `
           <div class="empty-logs" style="color:var(--text-muted); font-size:0.85rem; font-style:italic;">
             Listening for triggers... Alerts will show BUY signals when USDT ≥ $5.50 and SELL signals when holding position ≥ $5.00.
           </div>
         `;
-        pager.style.display = 'none';
-        return;
-      }
+          pager.style.display = "none";
+          return;
+        }
 
-      pageAlerts.forEach(alert => {
-        const item = document.createElement('div');
-        const isExecuted = executedAlerts.has(alert.id);
-        item.id = `alert-card-${alert.id}`;
-        item.className = `log-item ${alert.action === 'BUY' ? 'buy-alert' : 'sell-alert'} ${isExecuted ? 'executed' : ''}`;
+        pageAlerts.forEach((alert) => {
+          const item = document.createElement("div");
+          const isExecuted = executedAlerts.has(alert.id);
+          item.id = `alert-card-${alert.id}`;
+          item.className = `log-item ${alert.action === "BUY" ? "buy-alert" : "sell-alert"} ${isExecuted ? "executed" : ""}`;
 
-        item.innerHTML = `
+          item.innerHTML = `
           <div>
-            <div style="font-weight:700; color:${alert.action === 'BUY' ? 'var(--green-up)' : 'var(--red-down)'};">
-              ${alert.action === 'BUY' ? '⚡ BUY SIGNAL' : '🚨 SELL SIGNAL'}: ${alert.symbol}
+            <div style="font-weight:700; color:${alert.action === "BUY" ? "var(--green-up)" : "var(--red-down)"};">
+              ${alert.action === "BUY" ? "⚡ BUY SIGNAL" : "🚨 SELL SIGNAL"}: ${alert.symbol}
               <span class="timestamp-badge" id="time-${alert.id}">${formatAlertTime(alert.createdTime)}</span>
             </div>
             <div style="color:var(--text-muted); margin-top:0.25rem;">
@@ -877,201 +889,199 @@
             </div>
           </div>
           <div id="action-container-${alert.id}">
-            ${isExecuted
-            ? `<button class="btn-executed" disabled>✓ EXECUTED</button>`
-            : alert.action === 'BUY'
-              ? `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'BUY', 5.50, '${alert.id}')" class="btn-buy" style="padding:0.4rem 0.8rem;">BUY $5.50</button>`
-              : `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'SELL', null, '${alert.id}', true)" class="btn-sell" style="padding:0.4rem 0.8rem;">SELL NOW</button>`
-          }
+            ${
+              isExecuted
+                ? `<button class="btn-executed" disabled>✓ EXECUTED</button>`
+                : alert.action === "BUY"
+                  ? `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'BUY', 5.50, '${alert.id}')" class="btn-buy" style="padding:0.4rem 0.8rem;">BUY $5.50</button>`
+                  : `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'SELL', null, '${alert.id}', true)" class="btn-sell" style="padding:0.4rem 0.8rem;">SELL NOW</button>`
+            }
           </div>
         `;
-        logsList.appendChild(item);
-      });
-
-      const totalPages = Math.ceil(persistedAlerts.length / alertsPerPage) || 1;
-      pageInfo.textContent = `Page ${currentAlertPage} of ${totalPages}`;
-      prevBtn.disabled = currentAlertPage === 1;
-      nextBtn.disabled = currentAlertPage === totalPages;
-      pager.style.display = totalPages > 1 ? 'flex' : 'none';
-    }
-
-    function changeAlertPage(delta) {
-      renderAlertPage(currentAlertPage + delta);
-    }
-
-    function renderAlertCard(symbol, price, rsi, action) {
-      const alertId = `${symbol}_${action}_${price}`;
-      if (activeAlerts.has(alertId)) return;
-
-      const createdTime = Date.now();
-      activeAlerts.set(alertId, createdTime);
-
-      const alert = { id: alertId, symbol, price, rsi, action, createdTime };
-      persistedAlerts.unshift(alert);
-      persistedAlerts = persistedAlerts.slice(0, 20);
-      savePersistedAlerts();
-
-      renderAlertPage(currentAlertPage);
-    }
-
-    async function openSettingsModal() {
-      try {
-        const res = await fetch('api/settings');
-        const data = await res.json();
-        if (data.success && data.config) {
-          document.getElementById('cfg-rsiOversold').value = data.config.rsiOversold;
-          document.getElementById('cfg-rsiOverbought').value = data.config.rsiOverbought;
-          document.getElementById('cfg-volumeSurge').value = data.config.volumeSurgeMultiplier;
-          document.getElementById('cfg-tradeAmount').value = data.config.tradeAmountUsdt;
-          document.getElementById('cfg-cooldown').value = data.config.cooldownMinutes;
-        }
-      } catch (err) {
-        console.error("Settings load error:", err);
-      }
-      document.getElementById('settingsModal').classList.add('active');
-    }
-
-    function closeSettingsModal() {
-      document.getElementById('settingsModal').classList.remove('active');
-      document.getElementById('settingsPasswordInput').value = '';
-    }
-
-    async function saveSettings() {
-      const password = document.getElementById('settingsPasswordInput').value.trim();
-      if (!password) {
-        showToast('Password Required', 'Please enter your trading password.', 'error');
-        return;
-      }
-
-      const settings = {
-        rsiOversold: parseFloat(document.getElementById('cfg-rsiOversold').value),
-        rsiOverbought: parseFloat(document.getElementById('cfg-rsiOverbought').value),
-        volumeSurgeMultiplier: parseFloat(document.getElementById('cfg-volumeSurge').value),
-        tradeAmountUsdt: parseFloat(document.getElementById('cfg-tradeAmount').value),
-        cooldownMinutes: parseFloat(document.getElementById('cfg-cooldown').value),
-      };
-
-      try {
-        const res = await fetch('api/settings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password, settings }),
+          logsList.appendChild(item);
         });
 
-        const data = await res.json();
-        if (data.success) {
-          showToast('Settings Saved', 'Strategy parameters persisted to SQLite!', 'success');
-          closeSettingsModal();
-          updateDashboard();
-        } else {
-          showToast('Save Failed', data.error || 'Incorrect password', 'error');
-        }
-      } catch (err) {
-        showToast('Error', err.message, 'error');
+        const totalPages = Math.ceil(persistedAlerts.length / alertsPerPage) || 1;
+        pageInfo.textContent = `Page ${currentAlertPage} of ${totalPages}`;
+        prevBtn.disabled = currentAlertPage === 1;
+        nextBtn.disabled = currentAlertPage === totalPages;
+        pager.style.display = totalPages > 1 ? "flex" : "none";
       }
-    }
 
-    function relockControls() {
-      isManualUnlocked = false;
-      const unlockBtn = document.getElementById('unlock-btn');
-      if (unlockBtn) {
-        unlockBtn.innerText = '🔓 Unlock Impulse Trade Controls';
-        unlockBtn.classList.remove('unlocked');
+      function changeAlertPage(delta) {
+        renderAlertPage(currentAlertPage + delta);
       }
-      updateButtonVisibility();
-    }
 
-    async function toggleManualUnlock() {
-      const unlockBtn = document.getElementById('unlock-btn');
+      function renderAlertCard(symbol, price, rsi, action) {
+        const alertId = `${symbol}_${action}_${price}`;
+        if (activeAlerts.has(alertId)) return;
 
-      if (!isManualUnlocked) {
-        const password = await showConfirmationWithPassword(
-          'Enable Impulse Trading Mode',
-          'This will temporarily reveal manual BUY/SELL buttons across all cards.'
-        );
+        const createdTime = Date.now();
+        activeAlerts.set(alertId, createdTime);
 
-        if (password) {
-          isManualUnlocked = true;
-          unlockBtn.innerText = '🔒 Lock Trade Controls';
-          unlockBtn.classList.add('unlocked');
-          updateButtonVisibility();
-        }
-      } else {
-        relockControls();
+        const alert = { id: alertId, symbol, price, rsi, action, createdTime };
+        persistedAlerts.unshift(alert);
+        persistedAlerts = persistedAlerts.slice(0, 20);
+        savePersistedAlerts();
+
+        renderAlertPage(currentAlertPage);
       }
-    }
 
-    function updateButtonVisibility() {
-      document.querySelectorAll('.btn-group').forEach(group => {
-        if (isManualUnlocked) group.classList.add('visible');
-        else group.classList.remove('visible');
-      });
-    }
-
-    function showConfirmationWithPassword(title, message) {
-      return new Promise((resolve) => {
-        const modal = document.getElementById('confirmModal');
-        const confirmBtn = document.getElementById('modalConfirm');
-        const cancelBtn = document.getElementById('modalCancel');
-        const passInput = document.getElementById('tradePasswordInput');
-
-        document.getElementById('modalTitle').textContent = title;
-        document.getElementById('modalText').textContent = message;
-        passInput.value = '';
-
-        const handleConfirm = () => {
-          const pwd = passInput.value.trim();
-          modal.classList.remove('active');
-          resolve(pwd);
-          cleanup();
-        };
-
-        const handleCancel = () => {
-          modal.classList.remove('active');
-          resolve(null);
-          cleanup();
-        };
-
-        const cleanup = () => {
-          confirmBtn.removeEventListener('click', handleConfirm);
-          cancelBtn.removeEventListener('click', handleCancel);
-        };
-
-        confirmBtn.addEventListener('click', handleConfirm);
-        cancelBtn.addEventListener('click', handleCancel);
-        modal.classList.add('active');
-        passInput.focus();
-      });
-    }
-
-    function initChart(symbol, ctx) {
-      return new Chart(ctx, {
-        type: 'line',
-        data: { labels: Array(20).fill(''), datasets: [{ data: [], borderColor: '#0ecb81', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.2 }] },
-        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } }
-      });
-    }
-
-    async function updateDashboard() {
-      try {
-        const res = await fetch('api/status');
-        const data = await res.json();
-        const grid = document.getElementById('market-grid');
-
-        if (!data.markets) return;
-
-        data.markets.forEach(m => {
-          if (m.history && charts[m.symbol]) {
-            charts[m.symbol].data.datasets[0].data = m.history;
-            charts[m.symbol].update('none');
+      async function openSettingsModal() {
+        try {
+          const res = await fetch("api/settings");
+          const data = await res.json();
+          if (data.success && data.config) {
+            document.getElementById("cfg-rsiOversold").value = data.config.rsiOversold;
+            document.getElementById("cfg-rsiOverbought").value = data.config.rsiOverbought;
+            document.getElementById("cfg-volumeSurge").value = data.config.volumeSurgeMultiplier;
+            document.getElementById("cfg-tradeAmount").value = data.config.tradeAmountUsdt;
+            document.getElementById("cfg-cooldown").value = data.config.cooldownMinutes;
           }
+        } catch (err) {
+          console.error("Settings load error:", err);
+        }
+        document.getElementById("settingsModal").classList.add("active");
+      }
 
-          let card = document.getElementById(`card-${m.symbol}`);
-          if (!card) {
-            card = document.createElement('div');
-            card.id = `card-${m.symbol}`;
-            card.className = 'card';
-            card.innerHTML = `
+      function closeSettingsModal() {
+        document.getElementById("settingsModal").classList.remove("active");
+        document.getElementById("settingsPasswordInput").value = "";
+      }
+
+      async function saveSettings() {
+        const password = document.getElementById("settingsPasswordInput").value.trim();
+        if (!password) {
+          showToast("Password Required", "Please enter your trading password.", "error");
+          return;
+        }
+
+        const settings = {
+          rsiOversold: parseFloat(document.getElementById("cfg-rsiOversold").value),
+          rsiOverbought: parseFloat(document.getElementById("cfg-rsiOverbought").value),
+          volumeSurgeMultiplier: parseFloat(document.getElementById("cfg-volumeSurge").value),
+          tradeAmountUsdt: parseFloat(document.getElementById("cfg-tradeAmount").value),
+          cooldownMinutes: parseFloat(document.getElementById("cfg-cooldown").value),
+        };
+
+        try {
+          const res = await fetch("api/settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password, settings }),
+          });
+
+          const data = await res.json();
+          if (data.success) {
+            showToast("Settings Saved", "Strategy parameters persisted to SQLite!", "success");
+            closeSettingsModal();
+            updateDashboard();
+          } else {
+            showToast("Save Failed", data.error || "Incorrect password", "error");
+          }
+        } catch (err) {
+          showToast("Error", err.message, "error");
+        }
+      }
+
+      function relockControls() {
+        isManualUnlocked = false;
+        const unlockBtn = document.getElementById("unlock-btn");
+        if (unlockBtn) {
+          unlockBtn.innerText = "🔓 Unlock Impulse Trade Controls";
+          unlockBtn.classList.remove("unlocked");
+        }
+        updateButtonVisibility();
+      }
+
+      async function toggleManualUnlock() {
+        const unlockBtn = document.getElementById("unlock-btn");
+
+        if (!isManualUnlocked) {
+          const password = await showConfirmationWithPassword("Enable Impulse Trading Mode", "This will temporarily reveal manual BUY/SELL buttons across all cards.");
+
+          if (password) {
+            isManualUnlocked = true;
+            unlockBtn.innerText = "🔒 Lock Trade Controls";
+            unlockBtn.classList.add("unlocked");
+            updateButtonVisibility();
+          }
+        } else {
+          relockControls();
+        }
+      }
+
+      function updateButtonVisibility() {
+        document.querySelectorAll(".btn-group").forEach((group) => {
+          if (isManualUnlocked) group.classList.add("visible");
+          else group.classList.remove("visible");
+        });
+      }
+
+      function showConfirmationWithPassword(title, message) {
+        return new Promise((resolve) => {
+          const modal = document.getElementById("confirmModal");
+          const confirmBtn = document.getElementById("modalConfirm");
+          const cancelBtn = document.getElementById("modalCancel");
+          const passInput = document.getElementById("tradePasswordInput");
+
+          document.getElementById("modalTitle").textContent = title;
+          document.getElementById("modalText").textContent = message;
+          passInput.value = "";
+
+          const handleConfirm = () => {
+            const pwd = passInput.value.trim();
+            modal.classList.remove("active");
+            resolve(pwd);
+            cleanup();
+          };
+
+          const handleCancel = () => {
+            modal.classList.remove("active");
+            resolve(null);
+            cleanup();
+          };
+
+          const cleanup = () => {
+            confirmBtn.removeEventListener("click", handleConfirm);
+            cancelBtn.removeEventListener("click", handleCancel);
+          };
+
+          confirmBtn.addEventListener("click", handleConfirm);
+          cancelBtn.addEventListener("click", handleCancel);
+          modal.classList.add("active");
+          passInput.focus();
+        });
+      }
+
+      function initChart(symbol, ctx) {
+        return new Chart(ctx, {
+          type: "line",
+          data: { labels: Array(20).fill(""), datasets: [{ data: [], borderColor: "#0ecb81", borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.2 }] },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } },
+        });
+      }
+
+      async function updateDashboard() {
+        try {
+          const res = await fetch("api/status");
+          const data = await res.json();
+          const grid = document.getElementById("market-grid");
+
+          if (!data.markets) return;
+
+          data.markets.forEach((m) => {
+            if (m.history && charts[m.symbol]) {
+              charts[m.symbol].data.datasets[0].data = m.history;
+              charts[m.symbol].update("none");
+            }
+
+            let card = document.getElementById(`card-${m.symbol}`);
+            if (!card) {
+              card = document.createElement("div");
+              card.id = `card-${m.symbol}`;
+              card.className = "card";
+              card.innerHTML = `
               <div>
                 <div class="card-header">
                   <span class="symbol">${m.symbol}</span>
@@ -1097,152 +1107,152 @@
                 </div>
               </div>
             `;
-            grid.appendChild(card);
-            const ctx = document.getElementById(`chart-${m.symbol}`).getContext('2d');
-            charts[m.symbol] = initChart(m.symbol, ctx);
-          }
+              grid.appendChild(card);
+              const ctx = document.getElementById(`chart-${m.symbol}`).getContext("2d");
+              charts[m.symbol] = initChart(m.symbol, ctx);
+            }
 
-          document.getElementById(`price-${m.symbol}`).innerText = m.price ? '$' + m.price : '--';
+            document.getElementById(`price-${m.symbol}`).innerText = m.price ? "$" + m.price : "--";
 
-          const rsiEl = document.getElementById(`rsi-${m.symbol}`);
-          if (m.rsi !== null) {
-            rsiEl.innerText = m.rsi;
-            rsiEl.className = 'rsi-val ' + (m.rsi <= data.config.rsiOversold ? 'rsi-oversold' : m.rsi >= data.config.rsiOverbought ? 'rsi-overbought' : 'rsi-neutral');
-          }
+            const rsiEl = document.getElementById(`rsi-${m.symbol}`);
+            if (m.rsi !== null) {
+              rsiEl.innerText = m.rsi;
+              rsiEl.className = "rsi-val " + (m.rsi <= data.config.rsiOversold ? "rsi-oversold" : m.rsi >= data.config.rsiOverbought ? "rsi-overbought" : "rsi-neutral");
+            }
 
-          const surgeEl = document.getElementById(`surge-${m.symbol}`);
-          surgeEl.innerText = m.volSurge ? 'YES ⚡' : 'No';
+            const surgeEl = document.getElementById(`surge-${m.symbol}`);
+            surgeEl.innerText = m.volSurge ? "YES ⚡" : "No";
 
-          const buyBtn = document.getElementById(`buybtn-${m.symbol}`);
-          const sellBtn = document.getElementById(`sellbtn-${m.symbol}`);
-          if (buyBtn) buyBtn.disabled = !m.canBuy;
-          if (sellBtn) sellBtn.disabled = !m.canSell;
+            const buyBtn = document.getElementById(`buybtn-${m.symbol}`);
+            const sellBtn = document.getElementById(`sellbtn-${m.symbol}`);
+            if (buyBtn) buyBtn.disabled = !m.canBuy;
+            if (sellBtn) sellBtn.disabled = !m.canSell;
 
-          if (m.rsi !== null && m.rsi <= data.config.rsiOversold && m.volSurge && m.canBuy) {
-            renderAlertCard(m.symbol, m.price, m.rsi, 'BUY');
-          } else if (m.rsi !== null && m.rsi >= data.config.rsiOverbought && m.canSell) {
-            renderAlertCard(m.symbol, m.price, m.rsi, 'SELL');
-          }
-        });
+            if (m.rsi !== null && m.rsi <= data.config.rsiOversold && m.volSurge && m.canBuy) {
+              renderAlertCard(m.symbol, m.price, m.rsi, "BUY");
+            } else if (m.rsi !== null && m.rsi >= data.config.rsiOverbought && m.canSell) {
+              renderAlertCard(m.symbol, m.price, m.rsi, "SELL");
+            }
+          });
 
-        updateButtonVisibility();
-      } catch (err) {
-        console.error("Dashboard error:", err);
-      }
-    }
-
-    async function executeInAppTrade(symbol, side, amount = null, alertId = null, sellAll = false) {
-      const isSell = side.toUpperCase() === 'SELL';
-      const confirmTitle = `Execute ${side} Order`;
-
-      const confirmMessage = isSell || sellAll
-        ? `Execute MARKET SELL for 100% of your available ${symbol.toUpperCase()} balance?`
-        : `Execute a MARKET BUY order for $${amount || 5.50} USDT worth of ${symbol.toUpperCase()}?`;
-
-      const password = await showConfirmationWithPassword(confirmTitle, confirmMessage);
-      if (!password) return;
-
-      const btn = alertId ? document.getElementById(`btn-${alertId}`) : null;
-      const originalText = btn ? btn.innerText : '';
-
-      if (btn) {
-        btn.disabled = true;
-        btn.innerText = 'Executing...';
+          updateButtonVisibility();
+        } catch (err) {
+          console.error("Dashboard error:", err);
+        }
       }
 
-      const processingToast = showToast('Processing', `Sending ${side} order for ${symbol}...`, 'info', 0);
+      async function executeInAppTrade(symbol, side, amount = null, alertId = null, sellAll = false) {
+        const isSell = side.toUpperCase() === "SELL";
+        const confirmTitle = `Execute ${side} Order`;
 
-      try {
-        const payload = {
-          symbol,
-          side,
-          password,
-          sellAll: isSell || sellAll,
-          usdtAmount: !isSell ? (amount || 5.50) : undefined,
-        };
+        const confirmMessage =
+          isSell || sellAll
+            ? `Execute MARKET SELL for 100% of your available ${symbol.toUpperCase()} balance?`
+            : `Execute a MARKET BUY order for $${amount || 5.5} USDT worth of ${symbol.toUpperCase()}?`;
 
-        const res = await fetch('api/trade', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
+        const password = await showConfirmationWithPassword(confirmTitle, confirmMessage);
+        if (!password) return;
 
-        const data = await res.json();
+        const btn = alertId ? document.getElementById(`btn-${alertId}`) : null;
+        const originalText = btn ? btn.innerText : "";
 
-        if (processingToast) processingToast.remove();
+        if (btn) {
+          btn.disabled = true;
+          btn.innerText = "Executing...";
+        }
 
-        const outcomeEntry = {
-          id: `${Date.now()}_${symbol}_${side}_${Math.random().toString(36).slice(2, 6)}`,
-          timestamp: Date.now(),
-          symbol,
-          side,
-          amount: data.details?.cummulativeQuoteQty ? parseFloat(data.details.cummulativeQuoteQty) : (amount || 0),
-          status: data.success ? 'SUCCESS' : 'FAILED',
-          outcome: data.success ? `Order #${data.orderId}` : (data.error || 'Unknown failure'),
-          orderId: data.orderId || null,
-          alertId,
-        };
+        const processingToast = showToast("Processing", `Sending ${side} order for ${symbol}...`, "info", 0);
 
-        if (data.success) {
-          showToast('✓ Order Executed', `${side} ${symbol.toUpperCase()} successful! Order ID: ${data.orderId}`, 'success', 5000);
-          addTradeOutcome(outcomeEntry);
+        try {
+          const payload = {
+            symbol,
+            side,
+            password,
+            sellAll: isSell || sellAll,
+            usdtAmount: !isSell ? amount || 5.5 : undefined,
+          };
 
-          if (alertId) {
-            executedAlerts.add(alertId);
-            const card = document.getElementById(`alert-card-${alertId}`);
-            const actionContainer = document.getElementById(`action-container-${alertId}`);
+          const res = await fetch("api/trade", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
 
-            if (card) card.classList.add('executed');
-            if (actionContainer) {
-              actionContainer.innerHTML = `<button class="btn-executed" disabled>✓ EXECUTED (#${data.orderId})</button>`;
+          const data = await res.json();
+
+          if (processingToast) processingToast.remove();
+
+          const outcomeEntry = {
+            id: `${Date.now()}_${symbol}_${side}_${Math.random().toString(36).slice(2, 6)}`,
+            timestamp: Date.now(),
+            symbol,
+            side,
+            amount: data.details?.cummulativeQuoteQty ? parseFloat(data.details.cummulativeQuoteQty) : amount || 0,
+            status: data.success ? "SUCCESS" : "FAILED",
+            outcome: data.success ? `Order #${data.orderId}` : data.error || "Unknown failure",
+            orderId: data.orderId || null,
+            alertId,
+          };
+
+          if (data.success) {
+            showToast("✓ Order Executed", `${side} ${symbol.toUpperCase()} successful! Order ID: ${data.orderId}`, "success", 5000);
+            addTradeOutcome(outcomeEntry);
+
+            if (alertId) {
+              executedAlerts.add(alertId);
+              const card = document.getElementById(`alert-card-${alertId}`);
+              const actionContainer = document.getElementById(`action-container-${alertId}`);
+
+              if (card) card.classList.add("executed");
+              if (actionContainer) {
+                actionContainer.innerHTML = `<button class="btn-executed" disabled>✓ EXECUTED (#${data.orderId})</button>`;
+              }
+            }
+
+            fetchHoldings();
+            fetchPnL();
+
+            if (isManualUnlocked) {
+              relockControls();
+            }
+          } else {
+            showToast("Trade Failed", data.error || "Unknown error", "error", 4000);
+            addTradeOutcome(outcomeEntry);
+            if (btn) {
+              btn.disabled = false;
+              btn.innerText = originalText;
             }
           }
-
-          fetchHoldings();
-          fetchPnL();
-
-          if (isManualUnlocked) {
-            relockControls();
-          }
-        } else {
-          showToast('Trade Failed', data.error || 'Unknown error', 'error', 4000);
-          addTradeOutcome(outcomeEntry);
+        } catch (err) {
+          if (processingToast) processingToast.remove();
+          showToast("Execution Error", err.message, "error", 4000);
+          addTradeOutcome({
+            id: `${Date.now()}_${symbol}_${side}_${Math.random().toString(36).slice(2, 6)}`,
+            timestamp: Date.now(),
+            symbol,
+            side,
+            amount: amount || 0,
+            status: "ERROR",
+            outcome: err.message || "Network error",
+            orderId: null,
+            alertId,
+          });
           if (btn) {
             btn.disabled = false;
             btn.innerText = originalText;
           }
         }
-      } catch (err) {
-        if (processingToast) processingToast.remove();
-        showToast('Execution Error', err.message, 'error', 4000);
-        addTradeOutcome({
-          id: `${Date.now()}_${symbol}_${side}_${Math.random().toString(36).slice(2, 6)}`,
-          timestamp: Date.now(),
-          symbol,
-          side,
-          amount: amount || 0,
-          status: 'ERROR',
-          outcome: err.message || 'Network error',
-          orderId: null,
-          alertId,
-        });
-        if (btn) {
-          btn.disabled = false;
-          btn.innerText = originalText;
-        }
       }
-    }
 
-    setInterval(updateDashboard, 2000);
-    setInterval(refreshAlertDurations, 1000);
-    loadPersistedAlerts();
-    loadTradeOutcomes();
-    renderAlertPage(1);
-    renderTradeOutcomes();
-    updateDashboard();
-    fetchHoldings();
-    fetchPnL();
-  </script>
-</body>
-
+      setInterval(updateDashboard, 2000);
+      setInterval(refreshAlertDurations, 1000);
+      loadPersistedAlerts();
+      loadTradeOutcomes();
+      renderAlertPage(1);
+      renderTradeOutcomes();
+      updateDashboard();
+      fetchHoldings();
+      fetchPnL();
+    </script>
+  </body>
 </html>

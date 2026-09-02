@@ -420,15 +420,14 @@ app.get("/api/status", (req, res) => {
 
 app.get("/api/holdings", async (req, res) => {
   await updateAccountBalances();
-  const trackedAssets = new Set(["USDT", ...SYMBOLS.map((s) => s.toUpperCase().replace("USDT", ""))]);
 
   const activeBalances = Object.keys(availableBalances)
-    .filter((asset) => trackedAssets.has(asset) && availableBalances[asset] > 0.0001)
+    .filter((asset) => availableBalances[asset] > 0.0001) // Show any asset with balance > 0.0001
     .map((asset) => {
       const free = availableBalances[asset];
       let usdVal = free;
 
-      if (asset !== "USDT") {
+      if (asset !== "USDT" && asset !== "USD") {
         const pair = `${asset}USDT`;
         const currentPrice = marketData[pair]?.prices.slice(-1)[0] || 0;
         usdVal = free * currentPrice;
