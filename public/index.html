@@ -592,6 +592,11 @@
             </tr>
           </tbody>
         </table>
+        <div class="logs-pager" id="outcomes-pager" style="display: none">
+          <button id="outcomes-pager-prev" onclick="changeOutcomePage(-1)">← Previous</button>
+          <div class="page-info" id="outcomes-page-info">Page 1 of 1</div>
+          <button id="outcomes-pager-next" onclick="changeOutcomePage(1)">Next →</button>
+        </div>
       </div>
     </div>
 
@@ -661,9 +666,11 @@
       const alertStorageKey = "strategyAlerts";
       const outcomeStorageKey = "tradeOutcomeLedger";
       const alertsPerPage = 5;
-      const outcomeLimit = 12;
+      const outcomesPerPage = 5;
+      const outcomeLimit = 50;
 
       let currentAlertPage = 1;
+      let currentOutcomePage = 1;
       let persistedAlerts = [];
       let tradeOutcomes = [];
 
@@ -805,11 +812,15 @@
         tradeOutcomes.unshift(entry);
         tradeOutcomes = tradeOutcomes.slice(0, outcomeLimit);
         saveTradeOutcomes();
-        renderTradeOutcomes();
+        renderTradeOutcomes(1);
       }
 
-      function renderTradeOutcomes() {
+      function renderTradeOutcomes(page = currentOutcomePage) {
         const tbody = document.getElementById("outcomes-body");
+        const pager = document.getElementById("outcomes-pager");
+        const pageInfo = document.getElementById("outcomes-page-info");
+        const prevBtn = document.getElementById("outcomes-pager-prev");
+        const nextBtn = document.getElementById("outcomes-pager-next");
         if (!tbody) return;
 
         if (tradeOutcomes.length === 0) {
@@ -820,10 +831,17 @@
             </td>
           </tr>
         `;
+          if (pager) pager.style.display = "none";
+          currentOutcomePage = 1;
           return;
         }
 
-        tbody.innerHTML = tradeOutcomes
+        const totalPages = Math.ceil(tradeOutcomes.length / outcomesPerPage) || 1;
+        currentOutcomePage = Math.max(1, Math.min(page, totalPages));
+        const start = (currentOutcomePage - 1) * outcomesPerPage;
+        const pageOutcomes = tradeOutcomes.slice(start, start + outcomesPerPage);
+
+        tbody.innerHTML = pageOutcomes
           .map(
             (o) => `
           <tr class="${o.status === "SUCCESS" ? "trade-success" : "trade-failed"}">
@@ -839,6 +857,17 @@
         `,
           )
           .join("");
+
+        if (pager && pageInfo && prevBtn && nextBtn) {
+          pageInfo.textContent = `Page ${currentOutcomePage} of ${totalPages}`;
+          prevBtn.disabled = currentOutcomePage === 1;
+          nextBtn.disabled = currentOutcomePage === totalPages;
+          pager.style.display = totalPages > 1 ? "flex" : "none";
+        }
+      }
+
+      function changeOutcomePage(delta) {
+        renderTradeOutcomes(currentOutcomePage + delta);
       }
 
       function refreshAlertDurations() {
@@ -1042,13 +1071,22 @@
             cleanup();
           };
 
+          const handleKeydown = (e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              handleConfirm();
+            }
+          };
+
           const cleanup = () => {
             confirmBtn.removeEventListener("click", handleConfirm);
             cancelBtn.removeEventListener("click", handleCancel);
+            passInput.removeEventListener("keydown", handleKeydown);
           };
 
           confirmBtn.addEventListener("click", handleConfirm);
           cancelBtn.addEventListener("click", handleCancel);
+          passInput.addEventListener("keydown", handleKeydown);
           modal.classList.add("active");
           passInput.focus();
         });
