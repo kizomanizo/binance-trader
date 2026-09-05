@@ -67,6 +67,20 @@ async function initDatabase() {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS strategy_alerts (
+      id TEXT PRIMARY KEY,
+      symbol TEXT NOT NULL,
+      action TEXT NOT NULL,
+      signal_type TEXT NOT NULL,
+      price REAL NOT NULL,
+      rsi REAL,
+      created_time INTEGER NOT NULL,
+      executed INTEGER NOT NULL DEFAULT 0,
+      order_id TEXT
+    )
+  `);
+
   loadSettingsFromDb();
   saveDatabase();
 }
@@ -89,6 +103,61 @@ function loadSettingsFromDb() {
 
 function saveSettingToDb(key, value) {
   db.run(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`, [key, String(value)]);
+  saveDatabase();
+}
+
+const ALERT_RETENTION = 50;
+
+function recordStrategyAlert({ symbol, action, signalType, price, rsi }) {
+  if (!db) return null;
+  const createdTime = Date.now();
+  const id = `${String(symbol).toUpperCase()}_${action}_${createdTime}`;
+  db.run(`INSERT INTO strategy_alerts (id, symbol, action, signal_type, price, rsi, created_time, executed) VALUES (?, ?, ?, ?, ?, ?, ?, 0)`, [
+    id,
+    String(symbol).toUpperCase(),
+    action,
+    signalType || action,
+    parseFloat(price) || 0,
+    typeof rsi === "number" ? rsi : null,
+    createdTime,
+  ]);
+
+  const stmt = db.prepare("SELECT id FROM strategy_alerts ORDER BY created_time DESC");
+  const ids = [];
+  while (stmt.step()) ids.push(stmt.getAsObject().id);
+  stmt.free();
+  ids.slice(ALERT_RETENTION).forEach((oldId) => {
+    db.run("DELETE FROM strategy_alerts WHERE id = ?", [oldId]);
+  });
+  saveDatabase();
+  return id;
+}
+
+function listStrategyAlerts() {
+  if (!db) return [];
+  const stmt = db.prepare("SELECT * FROM strategy_alerts ORDER BY created_time DESC");
+  const alerts = [];
+  while (stmt.step()) {
+    const row = stmt.getAsObject();
+    alerts.push({
+      id: row.id,
+      symbol: row.symbol,
+      action: row.action,
+      signalType: row.signal_type,
+      price: row.price,
+      rsi: row.rsi === null || row.rsi === undefined ? null : parseFloat(Number(row.rsi).toFixed(2)),
+      createdTime: row.created_time,
+      executed: Boolean(row.executed),
+      orderId: row.order_id || null,
+    });
+  }
+  stmt.free();
+  return alerts;
+}
+
+function markAlertExecuted(alertId, orderId) {
+  if (!db || !alertId) return;
+  db.run(`UPDATE strategy_alerts SET executed = 1, order_id = ? WHERE id = ?`, [orderId ? String(orderId) : "", alertId]);
   saveDatabase();
 }
 
@@ -423,6 +492,7 @@ function connectMultiStreamWS() {
           const usdtBalance = availableBalances["USDT"] || 0;
 
           if (target.lastRsi <= config.rsiOversold && isVolumeSurge && usdtBalance >= config.tradeAmountUsdt) {
+            recordStrategyAlert({ symbol: sym, action: "BUY", signalType: "BUY", price: closePrice, rsi: target.lastRsi });
             sendTelegramAlert(
               `⚡ <b>BUY SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Available Cash:</b> $${usdtBalance.toFixed(2)} USDT`,
             );
@@ -431,6 +501,7 @@ function connectMultiStreamWS() {
             const sellSignal = evaluateSellSignal(sym, closePrice, target.lastRsi);
 
             if (sellSignal?.type === "TAKE_PROFIT") {
+              recordStrategyAlert({ symbol: sym, action: "SELL", signalType: "TAKE_PROFIT", price: closePrice, rsi: target.lastRsi });
               sendTelegramAlert(
                 `🎯 <b>TAKE PROFIT SIGNAL (${sym})</b>\n\n` +
                   `<b>Price:</b> $${closePrice} (Fee-adjusted entry: $${sellSignal.avgEntryPrice.toFixed(4)})\n` +
@@ -444,6 +515,7 @@ function connectMultiStreamWS() {
               const isDeeperDip = lastPnl !== null && sellSignal.netPnl <= lastPnl - 1.0;
 
               if (lastPnl === null || isDeeperDip) {
+                recordStrategyAlert({ symbol: sym, action: "SELL", signalType: "STOP_LOSS", price: closePrice, rsi: target.lastRsi });
                 sendTelegramAlert(
                   `🛑 <b>STOP LOSS ALERT (${sym})</b>\n\n` +
                     `<b>Price:</b> $${closePrice} (Fee-adjusted entry: $${sellSignal.avgEntryPrice.toFixed(4)})\n` +
@@ -491,6 +563,10 @@ app.post("/api/settings", express.json(), (req, res) => {
   }
 
   res.status(400).json({ success: false, error: "Invalid settings payload." });
+});
+
+app.get("/api/alerts", (req, res) => {
+  res.json({ success: true, alerts: listStrategyAlerts() });
 });
 
 app.get("/api/status", (req, res) => {
@@ -622,7 +698,7 @@ app.get("/api/pnl", (req, res) => {
 
 // Protected Trade Execution Endpoint
 app.post("/api/trade", express.json(), async (req, res) => {
-  const { symbol, side, usdtAmount, quantity, sellAll, password } = req.body;
+  const { symbol, side, usdtAmount, quantity, sellAll, password, alertId } = req.body;
 
   if (!password || password !== TRADE_PASSWORD) {
     return res.status(401).json({ success: false, error: "Unauthorized: Incorrect password." });
@@ -707,6 +783,7 @@ app.post("/api/trade", express.json(), async (req, res) => {
         timestamp,
       ]);
       saveDatabase();
+      markAlertExecuted(alertId, result.orderId);
       await updateAccountBalances();
 
       let dustConverted = false;

@@ -694,7 +694,6 @@
       let isManualUnlocked = false;
       const activeAlerts = new Map();
       const executedAlerts = new Set();
-      const alertStorageKey = "strategyAlerts";
       const outcomeStorageKey = "tradeOutcomeLedger";
       const alertsPerPage = 5;
       const outcomesPerPage = 5;
@@ -703,6 +702,7 @@
       let currentAlertPage = 1;
       let currentOutcomePage = 1;
       let persistedAlerts = [];
+      let lastAlertsFingerprint = "";
       let tradeOutcomes = [];
       let tradeAmountUsdt = 5.5;
 
@@ -823,9 +823,12 @@
         const localStr = new Date(createdTime).toLocaleTimeString();
 
         let agoStr = "just now";
-        if (elapsedSec >= 60) {
-          const mins = Math.floor(elapsedSec / 60);
-          agoStr = `${mins}m ago`;
+        if (elapsedSec >= 86400) {
+          agoStr = `${Math.floor(elapsedSec / 86400)}d ago`;
+        } else if (elapsedSec >= 3600) {
+          agoStr = `${Math.floor(elapsedSec / 3600)}h ago`;
+        } else if (elapsedSec >= 60) {
+          agoStr = `${Math.floor(elapsedSec / 60)}m ago`;
         } else if (elapsedSec > 5) {
           agoStr = `${elapsedSec}s ago`;
         }
@@ -833,20 +836,36 @@
         return `${localStr} <span style="color:var(--accent-yellow);">(${agoStr})</span>`;
       }
 
-      function loadPersistedAlerts() {
+      function applyServerAlerts(alerts) {
+        persistedAlerts = Array.isArray(alerts) ? alerts : [];
+        activeAlerts.clear();
+        executedAlerts.clear();
+        persistedAlerts.forEach((alert) => {
+          activeAlerts.set(alert.id, alert.createdTime);
+          if (alert.executed) executedAlerts.add(alert.id);
+        });
+      }
+
+      async function fetchStrategyAlerts() {
         try {
-          const raw = localStorage.getItem(alertStorageKey);
-          persistedAlerts = raw ? JSON.parse(raw) : [];
-          activeAlerts.clear();
-          persistedAlerts.forEach((alert) => activeAlerts.set(alert.id, alert.createdTime));
+          const res = await fetch("api/alerts");
+          const data = await res.json();
+          if (!data.success) return;
+          const fingerprint = (data.alerts || []).map((a) => `${a.id}:${a.executed ? 1 : 0}:${a.orderId || ""}`).join("|");
+          if (fingerprint === lastAlertsFingerprint) return;
+          lastAlertsFingerprint = fingerprint;
+          applyServerAlerts(data.alerts);
+          renderAlertPage(currentAlertPage);
         } catch (err) {
-          persistedAlerts = [];
-          activeAlerts.clear();
+          console.error("Alerts load error:", err);
         }
       }
 
-      function savePersistedAlerts() {
-        localStorage.setItem(alertStorageKey, JSON.stringify(persistedAlerts));
+      function alertHeadline(alert) {
+        if (alert.action === "BUY") return "⚡ BUY SIGNAL";
+        if (alert.signalType === "TAKE_PROFIT") return "🎯 TAKE PROFIT";
+        if (alert.signalType === "STOP_LOSS") return "🛑 STOP LOSS";
+        return "🚨 SELL SIGNAL";
       }
 
       function loadTradeOutcomes() {
@@ -957,14 +976,14 @@
 
         pageAlerts.forEach((alert) => {
           const item = document.createElement("div");
-          const isExecuted = executedAlerts.has(alert.id);
+          const isExecuted = executedAlerts.has(alert.id) || alert.executed;
           item.id = `alert-card-${alert.id}`;
           item.className = `log-item ${alert.action === "BUY" ? "buy-alert" : "sell-alert"} ${isExecuted ? "executed" : ""}`;
 
           item.innerHTML = `
           <div>
             <div style="font-weight:700; color:${alert.action === "BUY" ? "var(--green-up)" : "var(--red-down)"};">
-              ${alert.action === "BUY" ? "⚡ BUY SIGNAL" : "🚨 SELL SIGNAL"}: ${alert.symbol}
+              ${alertHeadline(alert)}: ${alert.symbol}
               <span class="timestamp-badge" id="time-${alert.id}">${formatAlertTime(alert.createdTime)}</span>
             </div>
             <div style="color:var(--text-muted); margin-top:0.25rem;">
@@ -974,7 +993,7 @@
           <div id="action-container-${alert.id}">
             ${
               isExecuted
-                ? `<button class="btn-executed" disabled>✓ EXECUTED</button>`
+                ? `<button class="btn-executed" disabled>✓ EXECUTED${alert.orderId ? ` (#${alert.orderId})` : ""}</button>`
                 : alert.action === "BUY"
                   ? `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'BUY', null, '${alert.id}')" class="btn-buy" style="padding:0.4rem 0.8rem;">BUY $${formatTradeAmount()}</button>`
                   : `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'SELL', null, '${alert.id}', true)" class="btn-sell" style="padding:0.4rem 0.8rem;">SELL NOW</button>`
@@ -993,21 +1012,6 @@
 
       function changeAlertPage(delta) {
         renderAlertPage(currentAlertPage + delta);
-      }
-
-      function renderAlertCard(symbol, price, rsi, action) {
-        const alertId = `${symbol}_${action}_${price}`;
-        if (activeAlerts.has(alertId)) return;
-
-        const createdTime = Date.now();
-        activeAlerts.set(alertId, createdTime);
-
-        const alert = { id: alertId, symbol, price, rsi, action, createdTime };
-        persistedAlerts.unshift(alert);
-        persistedAlerts = persistedAlerts.slice(0, 20);
-        savePersistedAlerts();
-
-        renderAlertPage(currentAlertPage);
       }
 
       async function openSettingsModal() {
@@ -1286,11 +1290,6 @@
             if (buyBtn) buyBtn.disabled = !m.canBuy;
             if (sellBtn) sellBtn.disabled = !m.canSell;
 
-            if (m.rsi !== null && m.rsi <= data.config.rsiOversold && m.volSurge && m.canBuy) {
-              renderAlertCard(m.symbol, m.price, m.rsi, "BUY");
-            } else if (m.sellSignal && m.canSell) {
-              renderAlertCard(m.symbol, m.price, m.rsi, "SELL");
-            }
           });
 
           updateButtonVisibility();
@@ -1335,6 +1334,7 @@
             sellAll: shouldSellAll,
             quantity: !shouldSellAll ? sellQty : undefined,
             usdtAmount: !isSell ? buyAmount : undefined,
+            alertId,
           };
 
           const res = await fetch("api/trade", {
@@ -1365,6 +1365,11 @@
 
             if (alertId) {
               executedAlerts.add(alertId);
+              const match = persistedAlerts.find((a) => a.id === alertId);
+              if (match) {
+                match.executed = true;
+                match.orderId = data.orderId || match.orderId;
+              }
               const card = document.getElementById(`alert-card-${alertId}`);
               const actionContainer = document.getElementById(`action-container-${alertId}`);
 
@@ -1410,11 +1415,12 @@
       }
 
       setInterval(updateDashboard, 2000);
+      setInterval(fetchStrategyAlerts, 2000);
       setInterval(refreshAlertDurations, 1000);
-      loadPersistedAlerts();
       loadTradeOutcomes();
       renderAlertPage(1);
       renderTradeOutcomes();
+      fetchStrategyAlerts();
       updateDashboard();
       fetchHoldings();
       fetchPnL();
