@@ -108,61 +108,32 @@
 
         .outcomes-container {
           padding: 1rem;
+          overflow-x: hidden;
         }
 
-        .outcome-table thead {
-          display: none;
-        }
-
-        .outcome-table,
-        .outcome-table tbody,
-        .outcome-table tr,
-        .outcome-table td {
-          display: block;
-          width: 100%;
-          box-sizing: border-box;
-        }
-
-        .outcome-table tr {
-          padding: 0.85rem 0.15rem;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-        }
-
-        .outcome-table tbody tr:last-child {
-          border-bottom: none;
+        .outcome-table {
+          table-layout: fixed;
         }
 
         .outcome-table th,
         .outcome-table td {
-          padding: 0.32rem 0;
-          border-bottom: none;
+          padding: 0.55rem 0.3rem;
+          font-size: 0.76rem;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
 
-        .outcome-table td {
-          display: flex;
-          justify-content: space-between;
-          align-items: baseline;
-          gap: 0.85rem;
-          word-break: break-word;
+        .outcome-table th {
+          font-size: 0.68rem;
         }
 
-        .outcome-table td::before {
-          content: attr(data-label);
-          color: var(--text-muted);
-          font-size: 0.72rem;
-          font-weight: 700;
-          letter-spacing: 0.02em;
-          text-transform: uppercase;
-          flex: 0 0 auto;
+        .outcome-table .col-outcome {
+          display: none;
         }
 
         .outcome-table td.outcome-empty {
-          display: block;
-          padding: 1rem 0;
-        }
-
-        .outcome-table td.outcome-empty::before {
-          content: none;
+          white-space: normal;
         }
       }
 
@@ -648,7 +619,7 @@
               <th>Symbol</th>
               <th>Amount</th>
               <th>Status</th>
-              <th>Outcome</th>
+              <th class="col-outcome">Outcome</th>
             </tr>
           </thead>
           <tbody id="outcomes-body">
@@ -981,14 +952,14 @@
           .map(
             (o) => `
           <tr class="${o.status === "SUCCESS" ? "trade-success" : "trade-failed"}">
-            <td data-label="When">${new Date(o.timestamp).toLocaleTimeString()}</td>
-            <td data-label="Action">${o.side}</td>
-            <td data-label="Symbol">${o.symbol}</td>
-            <td data-label="Amount">$${parseFloat(o.amount).toFixed(2)}</td>
-            <td data-label="Status" class="outcome-status ${o.status === "SUCCESS" ? "status-success" : "status-failed"}">
+            <td>${new Date(o.timestamp).toLocaleTimeString()}</td>
+            <td>${o.side}</td>
+            <td>${o.symbol}</td>
+            <td>$${parseFloat(o.amount).toFixed(2)}</td>
+            <td class="outcome-status ${o.status === "SUCCESS" ? "status-success" : "status-failed"}">
               ${o.status}
             </td>
-            <td data-label="Outcome">${o.outcome}</td>
+            <td class="col-outcome">${o.outcome}</td>
           </tr>
         `,
           )
