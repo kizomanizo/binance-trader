@@ -267,6 +267,11 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const TRADE_PASSWORD = process.env.TRADE_PASSWORD || "admin123";
 
+const ALPACA_API_KEY = process.env.ALPACA_API_KEY;
+const ALPACA_SECRET_KEY = process.env.ALPACA_SECRET_KEY;
+const ALPACA_BASE_URL = process.env.ALPACA_BASE_URL || "https://paper-api.alpaca.markets/v2";
+const ALPACA_STOCK_WS_URL = "wss://stream.data.alpaca.markets/v2/iex";
+
 const SYMBOLS = (process.env.SYMBOLS || "btcusdt,ethusdt,solusdt,dogeusdt,xrpusdt").split(",").map((s) => s.trim().toLowerCase());
 const INTERVAL = "1m";
 
@@ -281,6 +286,26 @@ SYMBOLS.forEach((sym) => {
     lastStopLossPnl: null,
   };
 });
+
+const STOCK_SYMBOLS = (process.env.STOCK_SYMBOLS || "AAPL,TSLA,NVDA,SPY")
+  .split(",")
+  .map((s) => s.trim().toUpperCase())
+  .filter(Boolean);
+const stockMarketData = {};
+
+STOCK_SYMBOLS.forEach((symbol) => {
+  stockMarketData[symbol] = {
+    prices: [],
+    volumes: [],
+    lastRsi: null,
+    lastVolumeSurge: false,
+    lastSignalTime: 0,
+    lastSignal: null,
+  };
+});
+
+let alpacaStockWs = null;
+let alpacaReconnectTimer = null;
 
 // Fetch LOT_SIZE rules to format trade quantities precisely for Binance
 async function fetchExchangeInfo() {
@@ -540,6 +565,157 @@ function connectMultiStreamWS() {
   ws.on("close", () => setTimeout(connectMultiStreamWS, 3000));
 }
 
+function scheduleAlpacaReconnect() {
+  if (alpacaReconnectTimer) return;
+  alpacaReconnectTimer = setTimeout(() => {
+    alpacaReconnectTimer = null;
+    connectAlpacaStockWS();
+  }, 5000);
+}
+
+function processAlpacaBar(msg) {
+  const symbol = msg.S;
+  const closePrice = parseFloat(msg.c);
+  const volume = parseFloat(msg.v);
+  const target = stockMarketData[symbol];
+  if (!target || !Number.isFinite(closePrice)) return;
+
+  target.prices.push(closePrice);
+  if (Number.isFinite(volume)) target.volumes.push(volume);
+
+  if (target.prices.length > 100) target.prices.shift();
+  if (target.volumes.length > 100) target.volumes.shift();
+
+  let rsi = null;
+  if (target.prices.length >= 15) {
+    const rsiValues = RSI.calculate({ values: target.prices, period: 14 });
+    if (rsiValues && rsiValues.length > 0) {
+      rsi = rsiValues[rsiValues.length - 1];
+      target.lastRsi = rsi;
+    }
+  }
+
+  let isVolumeSurge = false;
+  if (target.volumes.length >= 20) {
+    const volSmaValues = SMA.calculate({ values: target.volumes, period: 20 });
+    if (volSmaValues && volSmaValues.length > 0) {
+      const avgVolume = volSmaValues[volSmaValues.length - 1];
+      isVolumeSurge = volume > avgVolume * config.volumeSurgeMultiplier;
+    }
+  }
+  target.lastVolumeSurge = isVolumeSurge;
+
+  if (rsi === null) return;
+
+  const now = Date.now();
+  const cooldownMs = config.cooldownMinutes * 60 * 1000;
+  if (now - target.lastSignalTime <= cooldownMs) return;
+
+  if (rsi <= config.rsiOversold && isVolumeSurge) {
+    target.lastSignalTime = now;
+    target.lastSignal = "BUY";
+    sendTelegramAlert(
+      `📈 <b>STOCK BUY SIGNAL (${symbol})</b>\n\n` +
+        `<b>RSI:</b> ${rsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` +
+        `<b>Source:</b> Alpaca Market Data`,
+    );
+  } else if (rsi >= config.rsiOverbought) {
+    target.lastSignalTime = now;
+    target.lastSignal = "OVERBOUGHT";
+    sendTelegramAlert(
+      `📊 <b>STOCK OVERBOUGHT ALERT (${symbol})</b>\n\n` +
+        `<b>RSI:</b> ${rsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` +
+        `<b>Action:</b> Consider evaluating profit targets.`,
+    );
+  }
+}
+
+function handleAlpacaMessage(msg, ws) {
+  if (!msg || typeof msg !== "object") return;
+
+  if (msg.T === "success" && msg.msg === "authenticated") {
+    ws.send(JSON.stringify({ action: "subscribe", bars: STOCK_SYMBOLS }));
+    console.log(`Alpaca IEX subscribed to 1m bars: ${STOCK_SYMBOLS.join(", ")}`);
+    return;
+  }
+
+  if (msg.T === "success") {
+    console.log(`[ALPACA] ${msg.msg || "success"}`);
+    return;
+  }
+
+  if (msg.T === "subscription") {
+    console.log("[ALPACA] Subscription confirmed:", msg.bars || STOCK_SYMBOLS);
+    return;
+  }
+
+  if (msg.T === "error") {
+    console.error(`[ALPACA ERROR] ${msg.code || ""} ${msg.msg || JSON.stringify(msg)}`);
+    return;
+  }
+
+  if (msg.T === "b") {
+    processAlpacaBar(msg);
+  }
+}
+
+function connectAlpacaStockWS() {
+  if (!ALPACA_API_KEY || !ALPACA_SECRET_KEY) {
+    console.warn("[ALPACA] Missing ALPACA_API_KEY or ALPACA_SECRET_KEY — stock stream disabled.");
+    return;
+  }
+
+  if (alpacaReconnectTimer) {
+    clearTimeout(alpacaReconnectTimer);
+    alpacaReconnectTimer = null;
+  }
+
+  if (alpacaStockWs) {
+    try {
+      alpacaStockWs.removeAllListeners();
+      alpacaStockWs.close();
+    } catch {
+      // ignore stale socket cleanup errors
+    }
+    alpacaStockWs = null;
+  }
+
+  const ws = new WebSocket(ALPACA_STOCK_WS_URL);
+  alpacaStockWs = ws;
+
+  ws.on("open", () => {
+    console.log(`Connected to Alpaca IEX stream (${ALPACA_BASE_URL})`);
+    ws.send(
+      JSON.stringify({
+        action: "auth",
+        key: ALPACA_API_KEY,
+        secret: ALPACA_SECRET_KEY,
+      }),
+    );
+  });
+
+  ws.on("message", (data) => {
+    try {
+      const parsed = JSON.parse(data);
+      const messages = Array.isArray(parsed) ? parsed : [parsed];
+      messages.forEach((msg) => handleAlpacaMessage(msg, ws));
+    } catch (err) {
+      console.error("Alpaca WS processing error:", err.message);
+    }
+  });
+
+  ws.on("error", (err) => {
+    console.error("Alpaca WebSocket Error:", err.message);
+    scheduleAlpacaReconnect();
+  });
+
+  ws.on("close", () => {
+    console.warn("Alpaca WebSocket closed. Reconnecting in 5s...");
+    if (alpacaStockWs === ws) alpacaStockWs = null;
+    scheduleAlpacaReconnect();
+  });
+}
+
 app.get("/api/settings", (req, res) => {
   res.json({ success: true, config });
 });
@@ -567,6 +743,35 @@ app.post("/api/settings", express.json(), (req, res) => {
 
 app.get("/api/alerts", (req, res) => {
   res.json({ success: true, alerts: listStrategyAlerts() });
+});
+
+app.get("/api/stocks", (req, res) => {
+  const stocks = STOCK_SYMBOLS.map((symbol) => {
+    const data = stockMarketData[symbol];
+    const prices = data.prices;
+    const rsiVal = data.lastRsi;
+    const currentPrice = prices.length > 0 ? prices[prices.length - 1] : null;
+
+    return {
+      symbol,
+      price: currentPrice,
+      history: prices.slice(-20),
+      rsi: typeof rsiVal === "number" ? parseFloat(rsiVal.toFixed(2)) : null,
+      volSurge: data.lastVolumeSurge,
+      lastSignal: data.lastSignal || null,
+      lastSignalTime: data.lastSignalTime || 0,
+    };
+  });
+
+  res.json({
+    success: true,
+    source: "alpaca",
+    feed: "iex",
+    interval: "1m",
+    baseUrl: ALPACA_BASE_URL,
+    connected: Boolean(alpacaStockWs && alpacaStockWs.readyState === WebSocket.OPEN),
+    stocks,
+  });
 });
 
 app.get("/api/status", (req, res) => {
@@ -833,10 +1038,15 @@ app.use(express.static("public"));
   setInterval(updateAccountBalances, 15000);
   await bootstrapHistoricalData();
   connectMultiStreamWS();
+  connectAlpacaStockWS();
 
   app.listen(PORT, async () => {
     console.log(`Terminal running on http://localhost:${PORT}`);
     const symbolsList = SYMBOLS.map((s) => s.toUpperCase()).join(", ");
-    await sendTelegramAlert(`🟢 <b>Binance Trader Online</b>\n\nMonitoring: <code>${symbolsList}</code>`);
+    await sendTelegramAlert(
+      `🟢 <b>Binance Trader Online</b>\n\n` +
+        `Monitoring: <code>${symbolsList}</code>\n` +
+        `Stocks: <code>${STOCK_SYMBOLS.join(", ")}</code>`,
+    );
   });
 })();
