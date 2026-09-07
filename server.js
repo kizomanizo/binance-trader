@@ -270,6 +270,7 @@ const TRADE_PASSWORD = process.env.TRADE_PASSWORD || "admin123";
 const ALPACA_API_KEY = process.env.ALPACA_API_KEY;
 const ALPACA_SECRET_KEY = process.env.ALPACA_SECRET_KEY;
 const ALPACA_BASE_URL = process.env.ALPACA_BASE_URL || "https://paper-api.alpaca.markets/v2";
+const ALPACA_DATA_URL = process.env.ALPACA_DATA_URL || "https://data.alpaca.markets/v2";
 const ALPACA_STOCK_WS_URL = "wss://stream.data.alpaca.markets/v2/iex";
 
 const SYMBOLS = (process.env.SYMBOLS || "btcusdt,ethusdt,solusdt,dogeusdt,xrpusdt").split(",").map((s) => s.trim().toLowerCase());
@@ -297,15 +298,26 @@ STOCK_SYMBOLS.forEach((symbol) => {
   stockMarketData[symbol] = {
     prices: [],
     volumes: [],
+    lastPrice: null,
+    lastBarTime: null,
     lastRsi: null,
     lastVolumeSurge: false,
     lastSignalTime: 0,
     lastSignal: null,
+    sawLiveBar: false,
   };
 });
 
 let alpacaStockWs = null;
 let alpacaReconnectTimer = null;
+let alpacaClock = { is_open: null, next_open: null, next_close: null };
+
+function alpacaAuthHeaders() {
+  return {
+    "APCA-API-KEY-ID": ALPACA_API_KEY,
+    "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+  };
+}
 
 // Fetch LOT_SIZE rules to format trade quantities precisely for Binance
 async function fetchExchangeInfo() {
@@ -461,6 +473,144 @@ async function bootstrapHistoricalData() {
   }
 }
 
+function applyStockBars(symbol, bars) {
+  const target = stockMarketData[symbol];
+  if (!target || !Array.isArray(bars) || bars.length === 0) return 0;
+
+  const prices = [];
+  const volumes = [];
+  let lastBarTime = null;
+  for (const bar of bars) {
+    const close = parseFloat(bar.c);
+    const volume = parseFloat(bar.v);
+    if (!Number.isFinite(close)) continue;
+    prices.push(close);
+    if (Number.isFinite(volume)) volumes.push(volume);
+    if (bar.t) lastBarTime = bar.t;
+  }
+  if (prices.length === 0) return 0;
+
+  target.prices = prices.slice(-100);
+  target.volumes = volumes.slice(-100);
+  target.lastPrice = prices[prices.length - 1];
+  target.lastBarTime = lastBarTime;
+
+  if (target.prices.length >= 15) {
+    const rsiVals = RSI.calculate({ values: target.prices, period: 14 });
+    if (rsiVals.length > 0) {
+      target.lastRsi = rsiVals[rsiVals.length - 1];
+    }
+  }
+  return prices.length;
+}
+
+function applyStockSnapshot(symbol, snapshot) {
+  const target = stockMarketData[symbol];
+  if (!target || !snapshot || typeof snapshot !== "object") return false;
+
+  const lastTrade = parseFloat(snapshot.latestTrade?.p);
+  const minuteClose = parseFloat(snapshot.minuteBar?.c);
+  const dailyClose = parseFloat(snapshot.dailyBar?.c);
+  const prevClose = parseFloat(snapshot.prevDailyBar?.c);
+  const price = [lastTrade, minuteClose, dailyClose, prevClose].find(Number.isFinite);
+  if (!Number.isFinite(price)) return false;
+
+  target.lastPrice = price;
+  if (target.prices.length === 0) target.prices = [price];
+  return true;
+}
+
+async function refreshAlpacaClock() {
+  if (!ALPACA_API_KEY || !ALPACA_SECRET_KEY) return;
+  try {
+    const res = await fetch(`${ALPACA_BASE_URL}/clock`, { headers: alpacaAuthHeaders() });
+    const data = await res.json();
+    if (!res.ok) {
+      console.error("[ALPACA CLOCK]", data.message || data);
+      return;
+    }
+    alpacaClock = {
+      is_open: Boolean(data.is_open),
+      next_open: data.next_open || null,
+      next_close: data.next_close || null,
+    };
+  } catch (err) {
+    console.error("[ALPACA CLOCK]", err.message);
+  }
+}
+
+async function refreshStockSnapshots() {
+  if (!ALPACA_API_KEY || !ALPACA_SECRET_KEY || STOCK_SYMBOLS.length === 0) return;
+
+  try {
+    const symbols = encodeURIComponent(STOCK_SYMBOLS.join(","));
+    const res = await fetch(`${ALPACA_DATA_URL}/stocks/snapshots?symbols=${symbols}&feed=iex`, {
+      headers: alpacaAuthHeaders(),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      console.error("[ALPACA SNAPSHOTS]", data.message || JSON.stringify(data));
+      return;
+    }
+
+    const snapshots = data.snapshots && typeof data.snapshots === "object" ? data.snapshots : data;
+    STOCK_SYMBOLS.forEach((symbol) => applyStockSnapshot(symbol, snapshots[symbol]));
+  } catch (err) {
+    console.error("[ALPACA SNAPSHOTS]", err.message);
+  }
+}
+
+async function bootstrapStockHistoricalData() {
+  if (!ALPACA_API_KEY || !ALPACA_SECRET_KEY) {
+    console.warn("[ALPACA] Missing ALPACA_API_KEY or ALPACA_SECRET_KEY — stock bootstrap skipped.");
+    return;
+  }
+  if (STOCK_SYMBOLS.length === 0) return;
+
+  console.log(`Bootstrapping Alpaca IEX stock data for: ${STOCK_SYMBOLS.join(", ")}...`);
+  await refreshAlpacaClock();
+
+  const start = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+  await Promise.all(
+    STOCK_SYMBOLS.map(async (symbol) => {
+      try {
+        const barsUrl =
+          `${ALPACA_DATA_URL}/stocks/bars?symbols=${encodeURIComponent(symbol)}` +
+          `&timeframe=1Min&limit=50&adjustment=raw&feed=iex&sort=desc&start=${encodeURIComponent(start)}`;
+        const res = await fetch(barsUrl, { headers: alpacaAuthHeaders() });
+        const data = await res.json();
+        if (!res.ok) {
+          console.error(`[ALPACA BARS ${symbol}]`, data.message || JSON.stringify(data));
+          return;
+        }
+        const rawBars = data.bars?.[symbol];
+        const bars = Array.isArray(rawBars) ? rawBars.slice().reverse() : [];
+        const count = applyStockBars(symbol, bars);
+        if (count > 0) {
+          console.log(`[ALPACA] Seeded ${symbol} with ${count} 1m bars, last $${stockMarketData[symbol].lastPrice}`);
+        }
+      } catch (err) {
+        console.error(`[ALPACA BARS ${symbol}]`, err.message);
+      }
+    }),
+  );
+
+  await refreshStockSnapshots();
+
+  STOCK_SYMBOLS.forEach((symbol) => {
+    const target = stockMarketData[symbol];
+    if (!Number.isFinite(target.lastPrice)) {
+      console.warn(`[ALPACA] No seed price for ${symbol} — UI will show -- until a live bar or snapshot arrives.`);
+    }
+  });
+
+  if (alpacaClock.is_open === false) {
+    console.log(
+      `[ALPACA] US market is closed. Showing last IEX prices until next open${alpacaClock.next_open ? ` (${alpacaClock.next_open})` : ""}.`,
+    );
+  }
+}
+
 function connectMultiStreamWS() {
   const streamNames = SYMBOLS.map((s) => `${s}@kline_${INTERVAL}`).join("/");
   const wsUrl = `wss://data-stream.binance.com/stream?streams=${streamNames}`;
@@ -573,15 +723,31 @@ function scheduleAlpacaReconnect() {
   }, 5000);
 }
 
+function processAlpacaTrade(msg) {
+  const symbol = msg.S;
+  const price = parseFloat(msg.p);
+  const target = stockMarketData[symbol];
+  if (!target || !Number.isFinite(price)) return;
+  target.lastPrice = price;
+}
+
 function processAlpacaBar(msg) {
   const symbol = msg.S;
   const closePrice = parseFloat(msg.c);
   const volume = parseFloat(msg.v);
   const target = stockMarketData[symbol];
   if (!target || !Number.isFinite(closePrice)) return;
+  if (msg.t && target.lastBarTime === msg.t) return;
+
+  if (!target.sawLiveBar) {
+    target.sawLiveBar = true;
+    console.log(`[ALPACA] first live bar ${symbol} $${closePrice}`);
+  }
 
   target.prices.push(closePrice);
   if (Number.isFinite(volume)) target.volumes.push(volume);
+  target.lastPrice = closePrice;
+  if (msg.t) target.lastBarTime = msg.t;
 
   if (target.prices.length > 100) target.prices.shift();
   if (target.volumes.length > 100) target.volumes.shift();
@@ -634,8 +800,8 @@ function handleAlpacaMessage(msg, ws) {
   if (!msg || typeof msg !== "object") return;
 
   if (msg.T === "success" && msg.msg === "authenticated") {
-    ws.send(JSON.stringify({ action: "subscribe", bars: STOCK_SYMBOLS }));
-    console.log(`Alpaca IEX subscribed to 1m bars: ${STOCK_SYMBOLS.join(", ")}`);
+    ws.send(JSON.stringify({ action: "subscribe", bars: STOCK_SYMBOLS, trades: STOCK_SYMBOLS }));
+    console.log(`Alpaca IEX subscribed to 1m bars + trades: ${STOCK_SYMBOLS.join(", ")}`);
     return;
   }
 
@@ -645,12 +811,20 @@ function handleAlpacaMessage(msg, ws) {
   }
 
   if (msg.T === "subscription") {
-    console.log("[ALPACA] Subscription confirmed:", msg.bars || STOCK_SYMBOLS);
+    console.log("[ALPACA] Subscription confirmed:", {
+      bars: msg.bars || [],
+      trades: msg.trades || [],
+    });
     return;
   }
 
   if (msg.T === "error") {
     console.error(`[ALPACA ERROR] ${msg.code || ""} ${msg.msg || JSON.stringify(msg)}`);
+    return;
+  }
+
+  if (msg.T === "t") {
+    processAlpacaTrade(msg);
     return;
   }
 
@@ -750,7 +924,8 @@ app.get("/api/stocks", (req, res) => {
     const data = stockMarketData[symbol];
     const prices = data.prices;
     const rsiVal = data.lastRsi;
-    const currentPrice = prices.length > 0 ? prices[prices.length - 1] : null;
+    const barPrice = prices.length > 0 ? prices[prices.length - 1] : null;
+    const currentPrice = Number.isFinite(data.lastPrice) ? data.lastPrice : barPrice;
 
     return {
       symbol,
@@ -770,6 +945,9 @@ app.get("/api/stocks", (req, res) => {
     interval: "1m",
     baseUrl: ALPACA_BASE_URL,
     connected: Boolean(alpacaStockWs && alpacaStockWs.readyState === WebSocket.OPEN),
+    marketOpen: alpacaClock.is_open,
+    nextOpen: alpacaClock.next_open,
+    nextClose: alpacaClock.next_close,
     stocks,
   });
 });
@@ -1037,8 +1215,11 @@ app.use(express.static("public"));
   await updateAccountBalances();
   setInterval(updateAccountBalances, 15000);
   await bootstrapHistoricalData();
+  await bootstrapStockHistoricalData();
   connectMultiStreamWS();
   connectAlpacaStockWS();
+  setInterval(refreshStockSnapshots, 60000);
+  setInterval(refreshAlpacaClock, 60000);
 
   app.listen(PORT, async () => {
     console.log(`Terminal running on http://localhost:${PORT}`);

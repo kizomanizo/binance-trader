@@ -1612,7 +1612,21 @@
           const statusEl = document.getElementById("stocks-status");
           if (!data.stocks || !grid) return;
 
-          statusEl.textContent = data.connected ? "Stocks" : "Stocks · offline";
+          if (!data.connected) {
+            statusEl.textContent = "Stocks · offline";
+          } else if (data.marketOpen === false) {
+            statusEl.textContent = "Stocks · closed";
+          } else {
+            statusEl.textContent = "Stocks";
+          }
+
+          const strip = document.getElementById("stock-strip");
+          if (strip) {
+            const nextOpen = data.nextOpen ? ` · next open ${new Date(data.nextOpen).toLocaleString()}` : "";
+            strip.title = data.marketOpen === false
+              ? `Alpaca IEX · last session prices${nextOpen}`
+              : "Alpaca IEX · Telegram alerts only";
+          }
 
           data.stocks.forEach((s) => {
             let chip = document.getElementById(`stock-chip-${s.symbol}`);
