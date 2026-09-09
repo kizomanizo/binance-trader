@@ -30,6 +30,15 @@ let config = {
   takerFeePercent: 0.1,
 };
 
+let alertConfig = {
+  cryptoTelegramEnabled: true,
+  stocksTelegramEnabled: true,
+  cryptoAllowedStart: "",
+  cryptoAllowedEnd: "",
+  stocksAllowedStart: "",
+  stocksAllowedEnd: "",
+};
+
 function saveDatabase() {
   if (!db) return;
   const data = db.export();
@@ -77,12 +86,29 @@ async function initDatabase() {
       rsi REAL,
       created_time INTEGER NOT NULL,
       executed INTEGER NOT NULL DEFAULT 0,
-      order_id TEXT
+      order_id TEXT,
+      source TEXT NOT NULL DEFAULT 'crypto'
     )
   `);
 
+  ensureColumn("strategy_alerts", "source", "TEXT NOT NULL DEFAULT 'crypto'");
   loadSettingsFromDb();
   saveDatabase();
+}
+
+function ensureColumn(table, column, type) {
+  const stmt = db.prepare(`PRAGMA table_info(${table})`);
+  let exists = false;
+  while (stmt.step()) {
+    if (stmt.getAsObject().name === column) exists = true;
+  }
+  stmt.free();
+  if (!exists) db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+}
+
+function parseStoredAlertValue(key, value) {
+  if (key.endsWith("Enabled")) return value === "true" || value === "1";
+  return value == null ? "" : String(value);
 }
 
 function loadSettingsFromDb() {
@@ -92,10 +118,13 @@ function loadSettingsFromDb() {
       const row = stmt.getAsObject();
       if (row.key in config) {
         config[row.key] = parseFloat(row.value);
+      } else if (row.key in alertConfig) {
+        alertConfig[row.key] = parseStoredAlertValue(row.key, row.value);
       }
     }
     stmt.free();
     console.log("Loaded strategy config from DB:", config);
+    console.log("Loaded alert config from DB:", alertConfig);
   } catch (err) {
     console.error("Error loading settings from DB:", err.message);
   }
@@ -108,11 +137,11 @@ function saveSettingToDb(key, value) {
 
 const ALERT_RETENTION = 50;
 
-function recordStrategyAlert({ symbol, action, signalType, price, rsi }) {
+function recordStrategyAlert({ symbol, action, signalType, price, rsi, source = "crypto" }) {
   if (!db) return null;
   const createdTime = Date.now();
   const id = `${String(symbol).toUpperCase()}_${action}_${createdTime}`;
-  db.run(`INSERT INTO strategy_alerts (id, symbol, action, signal_type, price, rsi, created_time, executed) VALUES (?, ?, ?, ?, ?, ?, ?, 0)`, [
+  db.run(`INSERT INTO strategy_alerts (id, symbol, action, signal_type, price, rsi, created_time, executed, source) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`, [
     id,
     String(symbol).toUpperCase(),
     action,
@@ -120,6 +149,7 @@ function recordStrategyAlert({ symbol, action, signalType, price, rsi }) {
     parseFloat(price) || 0,
     typeof rsi === "number" ? rsi : null,
     createdTime,
+    source === "stocks" ? "stocks" : "crypto",
   ]);
 
   const stmt = db.prepare("SELECT id FROM strategy_alerts ORDER BY created_time DESC");
@@ -149,6 +179,7 @@ function listStrategyAlerts() {
       createdTime: row.created_time,
       executed: Boolean(row.executed),
       orderId: row.order_id || null,
+      source: row.source === "stocks" ? "stocks" : "crypto",
     });
   }
   stmt.free();
@@ -388,6 +419,71 @@ async function sendTelegramAlert(message) {
   } catch (err) {
     console.error("Telegram Network Error:", err.message);
   }
+}
+
+function parseHHMM(value) {
+  if (value == null || value === "") return null;
+  const match = String(value).trim().match(/^([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/);
+  if (!match) return null;
+  return parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+}
+
+function normalizeAllowedTime(value) {
+  if (value == null || String(value).trim() === "") return "";
+  const match = String(value).trim().match(/^([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/);
+  if (!match) return null;
+  return `${String(match[1]).padStart(2, "0")}:${match[2]}`;
+}
+
+function isWithinAllowedHours(startStr, endStr, now = new Date()) {
+  const start = parseHHMM(startStr);
+  const end = parseHHMM(endStr);
+  if (start === null || end === null) return true;
+  const current = now.getHours() * 60 + now.getMinutes();
+  if (start === end) return true;
+  if (start < end) return current >= start && current < end;
+  return current >= start || current < end;
+}
+
+function shouldSendTelegram(channel) {
+  const isStocks = channel === "stocks";
+  const enabled = isStocks ? alertConfig.stocksTelegramEnabled : alertConfig.cryptoTelegramEnabled;
+  if (!enabled) return false;
+  const start = isStocks ? alertConfig.stocksAllowedStart : alertConfig.cryptoAllowedStart;
+  const end = isStocks ? alertConfig.stocksAllowedEnd : alertConfig.cryptoAllowedEnd;
+  return isWithinAllowedHours(start, end);
+}
+
+function sendChannelTelegram(channel, message) {
+  if (!shouldSendTelegram(channel)) return Promise.resolve();
+  return sendTelegramAlert(message);
+}
+
+function parseAlertSettingsPayload(payload) {
+  const values = {};
+
+  if ("cryptoTelegramEnabled" in payload) values.cryptoTelegramEnabled = Boolean(payload.cryptoTelegramEnabled);
+  if ("stocksTelegramEnabled" in payload) values.stocksTelegramEnabled = Boolean(payload.stocksTelegramEnabled);
+
+  const next = { ...alertConfig, ...values };
+  const timeKeys = ["cryptoAllowedStart", "cryptoAllowedEnd", "stocksAllowedStart", "stocksAllowedEnd"];
+  for (const key of timeKeys) {
+    if (key in payload) {
+      const normalized = normalizeAllowedTime(payload[key]);
+      if (normalized === null) return { error: "Allowed hours must be HH:MM or empty." };
+      next[key] = normalized;
+      values[key] = normalized;
+    }
+  }
+
+  if ((next.cryptoAllowedStart && !next.cryptoAllowedEnd) || (!next.cryptoAllowedStart && next.cryptoAllowedEnd)) {
+    return { error: "Set both crypto start and end times, or leave both empty for 24/7." };
+  }
+  if ((next.stocksAllowedStart && !next.stocksAllowedEnd) || (!next.stocksAllowedStart && next.stocksAllowedEnd)) {
+    return { error: "Set both stock start and end times, or leave both empty for 24/7." };
+  }
+
+  return { values };
 }
 
 async function updateAccountBalances() {
@@ -668,7 +764,8 @@ function connectMultiStreamWS() {
 
           if (target.lastRsi <= config.rsiOversold && isVolumeSurge && usdtBalance >= config.tradeAmountUsdt) {
             recordStrategyAlert({ symbol: sym, action: "BUY", signalType: "BUY", price: closePrice, rsi: target.lastRsi });
-            sendTelegramAlert(
+            sendChannelTelegram(
+              "crypto",
               `⚡ <b>BUY SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Available Cash:</b> $${usdtBalance.toFixed(2)} USDT`,
             );
             target.lastSignalTime = now;
@@ -677,7 +774,8 @@ function connectMultiStreamWS() {
 
             if (sellSignal?.type === "TAKE_PROFIT") {
               recordStrategyAlert({ symbol: sym, action: "SELL", signalType: "TAKE_PROFIT", price: closePrice, rsi: target.lastRsi });
-              sendTelegramAlert(
+              sendChannelTelegram(
+                "crypto",
                 `🎯 <b>TAKE PROFIT SIGNAL (${sym})</b>\n\n` +
                   `<b>Price:</b> $${closePrice} (Fee-adjusted entry: $${sellSignal.avgEntryPrice.toFixed(4)})\n` +
                   `<b>Net PnL after fees:</b> +${sellSignal.netPnl.toFixed(2)}%\n` +
@@ -691,7 +789,8 @@ function connectMultiStreamWS() {
 
               if (lastPnl === null || isDeeperDip) {
                 recordStrategyAlert({ symbol: sym, action: "SELL", signalType: "STOP_LOSS", price: closePrice, rsi: target.lastRsi });
-                sendTelegramAlert(
+                sendChannelTelegram(
+                  "crypto",
                   `🛑 <b>STOP LOSS ALERT (${sym})</b>\n\n` +
                     `<b>Price:</b> $${closePrice} (Fee-adjusted entry: $${sellSignal.avgEntryPrice.toFixed(4)})\n` +
                     `<b>Net PnL after fees:</b> ${sellSignal.netPnl.toFixed(2)}%\n` +
@@ -780,7 +879,9 @@ function processAlpacaBar(msg) {
   if (rsi <= config.rsiOversold && isVolumeSurge) {
     target.lastSignalTime = now;
     target.lastSignal = "BUY";
-    sendTelegramAlert(
+    recordStrategyAlert({ symbol, action: "BUY", signalType: "STOCK_BUY", price: closePrice, rsi, source: "stocks" });
+    sendChannelTelegram(
+      "stocks",
       `📈 <b>STOCK BUY SIGNAL (${symbol})</b>\n\n` +
         `<b>RSI:</b> ${rsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` +
         `<b>Source:</b> Alpaca Market Data`,
@@ -788,7 +889,9 @@ function processAlpacaBar(msg) {
   } else if (rsi >= config.rsiOverbought) {
     target.lastSignalTime = now;
     target.lastSignal = "OVERBOUGHT";
-    sendTelegramAlert(
+    recordStrategyAlert({ symbol, action: "OVERBOUGHT", signalType: "STOCK_OVERBOUGHT", price: closePrice, rsi, source: "stocks" });
+    sendChannelTelegram(
+      "stocks",
       `📊 <b>STOCK OVERBOUGHT ALERT (${symbol})</b>\n\n` +
         `<b>RSI:</b> ${rsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` +
         `<b>Action:</b> Consider evaluating profit targets.`,
@@ -891,17 +994,28 @@ function connectAlpacaStockWS() {
 }
 
 app.get("/api/settings", (req, res) => {
-  res.json({ success: true, config });
+  res.json({
+    success: true,
+    config,
+    alertConfig,
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  });
 });
 
 app.post("/api/settings", express.json(), (req, res) => {
-  const { password, settings } = req.body;
+  const { password, settings, alertSettings } = req.body;
 
   if (!password || password !== TRADE_PASSWORD) {
     return res.status(401).json({ success: false, error: "Unauthorized password." });
   }
 
-  if (settings && typeof settings === "object") {
+  const hasStrategy = settings && typeof settings === "object";
+  const hasAlerts = alertSettings && typeof alertSettings === "object";
+  if (!hasStrategy && !hasAlerts) {
+    return res.status(400).json({ success: false, error: "Invalid settings payload." });
+  }
+
+  if (hasStrategy) {
     Object.keys(settings).forEach((key) => {
       if (key in config) {
         config[key] = parseFloat(settings[key]);
@@ -909,10 +1023,19 @@ app.post("/api/settings", express.json(), (req, res) => {
       }
     });
     console.log("Updated runtime strategy settings:", config);
-    return res.json({ success: true, config });
   }
 
-  res.status(400).json({ success: false, error: "Invalid settings payload." });
+  if (hasAlerts) {
+    const parsed = parseAlertSettingsPayload(alertSettings);
+    if (parsed.error) {
+      return res.status(400).json({ success: false, error: parsed.error });
+    }
+    Object.assign(alertConfig, parsed.values);
+    Object.keys(parsed.values).forEach((key) => saveSettingToDb(key, alertConfig[key]));
+    console.log("Updated runtime alert settings:", alertConfig);
+  }
+
+  return res.json({ success: true, config, alertConfig });
 });
 
 app.get("/api/alerts", (req, res) => {
