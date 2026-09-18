@@ -1116,9 +1116,12 @@
         }
       }
 
-      async function fetchPnL(tf = "all", btn = null) {
+      let currentPnlTf = "all";
+
+      async function fetchPnL(tf = currentPnlTf, btn = null) {
+        currentPnlTf = tf;
         if (btn) {
-          document.querySelectorAll(".time-btn").forEach((b) => b.classList.remove("active"));
+          document.querySelectorAll(".time-toggles .time-btn").forEach((b) => b.classList.remove("active"));
           btn.classList.add("active");
         }
 

@@ -1147,8 +1147,9 @@ app.get("/api/pnl", (req, res) => {
   else if (timeframe === "month") timeFilter = now - 30 * 24 * 60 * 60 * 1000;
 
   try {
-    const stmt = db.prepare("SELECT * FROM trades WHERE timestamp >= :tf ORDER BY timestamp ASC");
-    stmt.bind({ ":tf": timeFilter });
+    // Walk the full trade history so cost basis includes buys that happened
+    // before the selected window. Realized PnL is attributed to the sell time.
+    const stmt = db.prepare("SELECT * FROM trades ORDER BY timestamp ASC");
 
     const trades = [];
     while (stmt.step()) {
@@ -1159,6 +1160,7 @@ app.get("/api/pnl", (req, res) => {
     const assetPnL = {};
     let totalRealizedUsdt = 0;
     let totalVolumeTraded = 0;
+    let tradeCount = 0;
 
     trades.forEach((t) => {
       const sym = t.symbol.toUpperCase();
@@ -1166,8 +1168,12 @@ app.get("/api/pnl", (req, res) => {
         assetPnL[sym] = { symbol: sym, buyQty: 0, buyCost: 0, realizedPnl: 0, tradeCount: 0 };
       }
 
-      assetPnL[sym].tradeCount++;
-      totalVolumeTraded += t.usdt_amount;
+      const inWindow = t.timestamp >= timeFilter;
+      if (inWindow) {
+        assetPnL[sym].tradeCount++;
+        totalVolumeTraded += t.usdt_amount;
+        tradeCount++;
+      }
 
       if (t.side.toUpperCase() === "BUY") {
         assetPnL[sym].buyQty += t.qty;
@@ -1178,8 +1184,10 @@ app.get("/api/pnl", (req, res) => {
           const costBasisForSale = t.qty * avgBuyPrice;
           const pnl = t.usdt_amount - costBasisForSale;
 
-          assetPnL[sym].realizedPnl += pnl;
-          totalRealizedUsdt += pnl;
+          if (inWindow) {
+            assetPnL[sym].realizedPnl += pnl;
+            totalRealizedUsdt += pnl;
+          }
 
           assetPnL[sym].buyQty = Math.max(0, assetPnL[sym].buyQty - t.qty);
           assetPnL[sym].buyCost = Math.max(0, assetPnL[sym].buyCost - costBasisForSale);
@@ -1191,11 +1199,13 @@ app.get("/api/pnl", (req, res) => {
       timeframe,
       totalRealizedPnl: parseFloat(totalRealizedUsdt.toFixed(2)),
       totalVolumeTraded: parseFloat(totalVolumeTraded.toFixed(2)),
-      assets: Object.values(assetPnL).map((a) => ({
-        ...a,
-        realizedPnl: parseFloat(a.realizedPnl.toFixed(2)),
-      })),
-      tradeCount: trades.length,
+      assets: Object.values(assetPnL)
+        .filter((a) => a.tradeCount > 0)
+        .map((a) => ({
+          ...a,
+          realizedPnl: parseFloat(a.realizedPnl.toFixed(2)),
+        })),
+      tradeCount,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
