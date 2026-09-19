@@ -39,6 +39,32 @@ let alertConfig = {
   stocksAllowedEnd: "",
 };
 
+let botConfig = {
+  defaultBudgetUsdt: 20,
+  alertProfitPercent: 3,
+  alertLossPercent: 3,
+};
+
+let botSession = createIdleBotSession();
+
+function createIdleBotSession() {
+  return {
+    enabled: false,
+    startedAt: null,
+    budgetUsdt: 0,
+    alertProfitPercent: botConfig.alertProfitPercent,
+    alertLossPercent: botConfig.alertLossPercent,
+    startingEquity: 0,
+    cashUsdt: 0,
+    positions: {},
+    lastAction: "Idle",
+    lastAlertKind: null,
+    lastAlertAt: 0,
+    realizedPnl: 0,
+    busy: false,
+  };
+}
+
 function saveDatabase() {
   if (!db) return;
   const data = db.export();
@@ -92,6 +118,7 @@ async function initDatabase() {
   `);
 
   ensureColumn("strategy_alerts", "source", "TEXT NOT NULL DEFAULT 'crypto'");
+  ensureColumn("trades", "source", "TEXT NOT NULL DEFAULT 'manual'");
   loadSettingsFromDb();
   saveDatabase();
 }
@@ -120,11 +147,17 @@ function loadSettingsFromDb() {
         config[row.key] = parseFloat(row.value);
       } else if (row.key in alertConfig) {
         alertConfig[row.key] = parseStoredAlertValue(row.key, row.value);
+      } else if (row.key in botConfig) {
+        const n = parseFloat(row.value);
+        if (Number.isFinite(n)) botConfig[row.key] = n;
+      } else if (row.key === "botSession") {
+        restoreBotSession(row.value);
       }
     }
     stmt.free();
     console.log("Loaded strategy config from DB:", config);
     console.log("Loaded alert config from DB:", alertConfig);
+    console.log("Loaded bot config from DB:", botConfig);
   } catch (err) {
     console.error("Error loading settings from DB:", err.message);
   }
@@ -239,6 +272,132 @@ function getNetPnlPercent(avgEntryPrice, closePrice) {
   if (!avgEntryPrice || !closePrice) return null;
   const netExit = closePrice * (1 - getTakerFeeRate());
   return ((netExit - avgEntryPrice) / avgEntryPrice) * 100;
+}
+
+function getMinNotional(symbol) {
+  return symbolLotSizes[String(symbol || "").toUpperCase()]?.minNotional || 5;
+}
+
+function restoreBotSession(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return;
+    botSession = {
+      ...createIdleBotSession(),
+      ...parsed,
+      positions: parsed.positions && typeof parsed.positions === "object" ? parsed.positions : {},
+      busy: false,
+    };
+    if (botSession.enabled) {
+      console.log(`[AUTOPILOT] Restored enabled session · cash $${Number(botSession.cashUsdt || 0).toFixed(2)}`);
+    }
+  } catch (err) {
+    console.warn("[AUTOPILOT] Failed to restore session:", err.message);
+    botSession = createIdleBotSession();
+  }
+}
+
+function persistBotSession() {
+  const { busy, ...rest } = botSession;
+  saveSettingToDb("botSession", JSON.stringify(rest));
+}
+
+function markToMarketBotPositions() {
+  let value = 0;
+  const open = [];
+  Object.entries(botSession.positions || {}).forEach(([symbol, pos]) => {
+    if (!pos) return;
+    const qty = parseFloat(pos.qty) || 0;
+    const fallback = parseFloat(pos.entryPrice) || 0;
+    const px = marketData[symbol]?.prices?.slice(-1)[0] || fallback;
+    const usd = qty * px;
+    value += usd;
+    open.push({
+      symbol,
+      qty,
+      usd: parseFloat(usd.toFixed(2)),
+      entryPrice: fallback,
+      orderId: pos.orderId || null,
+    });
+  });
+  return { value, open };
+}
+
+function getBotStatus() {
+  const mt = markToMarketBotPositions();
+  const cash = parseFloat(botSession.cashUsdt) || 0;
+  const equity = cash + mt.value;
+  const starting = parseFloat(botSession.startingEquity) || 0;
+  const pnl = botSession.startedAt ? equity - starting : 0;
+  const pnlPercent = starting > 0 ? (pnl / starting) * 100 : 0;
+  return {
+    enabled: Boolean(botSession.enabled),
+    startedAt: botSession.startedAt,
+    budgetUsdt: parseFloat((botSession.budgetUsdt || 0).toFixed(2)),
+    cashUsdt: parseFloat(cash.toFixed(2)),
+    equity: parseFloat(equity.toFixed(2)),
+    pnl: parseFloat(pnl.toFixed(2)),
+    pnlPercent: parseFloat(pnlPercent.toFixed(2)),
+    realizedPnl: parseFloat((botSession.realizedPnl || 0).toFixed(2)),
+    lastAction: botSession.lastAction || "Idle",
+    positions: mt.open,
+    alertProfitPercent: botSession.alertProfitPercent,
+    alertLossPercent: botSession.alertLossPercent,
+    usdtWallet: parseFloat((availableBalances.USDT || 0).toFixed(2)),
+    defaults: { ...botConfig },
+    clipUsdt: config.tradeAmountUsdt,
+  };
+}
+
+function evaluateBotSellSignal(symbol, closePrice, rsi) {
+  const pos = botSession.positions[symbol];
+  if (!pos) return null;
+  const entry = parseFloat(pos.entryPrice) || 0;
+  const netPnl = getNetPnlPercent(entry, closePrice);
+  const takeProfit = config.takeProfitPercent || 1.5;
+  const stopLoss = config.stopLossPercent || 2.0;
+
+  if (entry && netPnl !== null) {
+    if (typeof rsi === "number" && rsi >= config.rsiOverbought && netPnl >= takeProfit) {
+      return { type: "TAKE_PROFIT", avgEntryPrice: entry, netPnl };
+    }
+    if (netPnl <= -stopLoss) {
+      return { type: "STOP_LOSS", avgEntryPrice: entry, netPnl };
+    }
+    return null;
+  }
+  return null;
+}
+
+function maybeSessionPnlAlert() {
+  if (!botSession.enabled || !botSession.startedAt) return;
+  const snap = getBotStatus();
+  const now = Date.now();
+  if (now - (botSession.lastAlertAt || 0) < 60 * 1000) return;
+
+  if (snap.pnlPercent >= botSession.alertProfitPercent && botSession.lastAlertKind !== "profit") {
+    botSession.lastAlertKind = "profit";
+    botSession.lastAlertAt = now;
+    persistBotSession();
+    sendTelegramAlert(
+      `🤖 <b>AUTOPILOT SESSION +${snap.pnlPercent.toFixed(2)}%</b>\n\n` +
+        `<b>Session P/L:</b> ${snap.pnl >= 0 ? "+" : ""}$${snap.pnl.toFixed(2)}\n` +
+        `<b>Capital:</b> $${snap.equity.toFixed(2)} / $${snap.budgetUsdt.toFixed(2)} budget\n` +
+        `<b>Cash:</b> $${snap.cashUsdt.toFixed(2)} USDT\n` +
+        `<b>Action:</b> Tighten alerts or turn Autopilot OFF to park in USDT.`,
+    );
+  } else if (snap.pnlPercent <= -botSession.alertLossPercent && botSession.lastAlertKind !== "loss") {
+    botSession.lastAlertKind = "loss";
+    botSession.lastAlertAt = now;
+    persistBotSession();
+    sendTelegramAlert(
+      `🤖 <b>AUTOPILOT SESSION ${snap.pnlPercent.toFixed(2)}%</b>\n\n` +
+        `<b>Session P/L:</b> $${snap.pnl.toFixed(2)}\n` +
+        `<b>Capital:</b> $${snap.equity.toFixed(2)} / $${snap.budgetUsdt.toFixed(2)} budget\n` +
+        `<b>Cash:</b> $${snap.cashUsdt.toFixed(2)} USDT\n` +
+        `<b>Action:</b> Consider OFF to flatten back to USDT, or raise the loss alert.`,
+    );
+  }
 }
 
 function evaluateSellSignal(symbol, closePrice, rsi) {
@@ -692,6 +851,317 @@ async function syncBinanceTradeHistory() {
   return { trades, imported, symbols };
 }
 
+async function placeMarketOrder({ symbol, side, usdtAmount, quantity, sellAll = false, alertId = null, source = "manual" }) {
+  const apiKey = process.env.BINANCE_API_KEY;
+  const secretKey = process.env.BINANCE_SECRET_KEY;
+  if (!apiKey || !secretKey) return { success: false, error: "Missing API keys." };
+
+  const symUpper = String(symbol || "").toUpperCase();
+  const sideUpper = String(side || "").toUpperCase();
+  const baseAsset = symUpper.replace("USDT", "");
+  const isSell = sideUpper === "SELL";
+  const clearWallet = isSell && (sellAll || !quantity);
+  const tradeAmount = usdtAmount || config.tradeAmountUsdt;
+  let queryParams = `symbol=${symUpper}&side=${sideUpper}&type=MARKET`;
+
+  try {
+    if (isSell) {
+      await updateAccountBalances();
+      const freeQty = availableBalances[baseAsset] || 0;
+      const rawQty = clearWallet ? freeQty : Math.min(parseFloat(quantity) || 0, freeQty);
+
+      if (rawQty <= 0) return { success: false, error: `No available ${baseAsset} balance to sell.` };
+
+      const markPrice = marketData[symUpper]?.prices.slice(-1)[0] || 0;
+      const formattedQty = formatQuantity(symUpper, rawQty);
+
+      if (!parseFloat(formattedQty) || isDustQty(symUpper, formattedQty, markPrice)) {
+        const dust = await convertDustToBnb(baseAsset);
+        await updateAccountBalances();
+        if (dust) {
+          return { success: true, orderId: null, dustConverted: true, symbol: symUpper, side: "SELL", details: dust };
+        }
+        return { success: false, error: `${baseAsset} balance is below Binance LOT_SIZE / min notional.` };
+      }
+
+      queryParams += `&quantity=${formattedQty}`;
+    } else {
+      queryParams += `&quoteOrderQty=${tradeAmount}`;
+    }
+
+    const timestamp = Date.now();
+    queryParams += `&timestamp=${timestamp}`;
+    const signature = crypto.createHmac("sha256", secretKey).update(queryParams).digest("hex");
+    const response = await fetch(`https://api.binance.com/api/v3/order?${queryParams}&signature=${signature}`, {
+      method: "POST",
+      headers: {
+        "X-MBX-APIKEY": apiKey,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    });
+    const result = await response.json();
+
+    if (!result.orderId) {
+      return { success: false, error: result.msg || "Order rejected by Binance", details: result };
+    }
+
+    const economics = summarizeOrderFills(result, symUpper, sideUpper);
+    const executedPrice = parseFloat(result.fills?.[0]?.price || marketData[symUpper]?.prices.slice(-1)[0] || 0);
+    const executedQty = economics.netQty;
+    const executedUsdt = economics.recordedUsdt || parseFloat(result.cummulativeQuoteQty || tradeAmount || executedQty * executedPrice);
+
+    db.run(`INSERT INTO trades (symbol, side, price, qty, usdt_amount, order_id, timestamp, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
+      symUpper,
+      sideUpper,
+      executedPrice,
+      executedQty,
+      executedUsdt,
+      String(result.orderId),
+      timestamp,
+      source === "bot" ? "bot" : source === "binance" ? "binance" : "manual",
+    ]);
+    saveDatabase();
+    markAlertExecuted(alertId, result.orderId);
+    await updateAccountBalances();
+
+    let dustConverted = false;
+    if (clearWallet) {
+      const leftover = availableBalances[baseAsset] || 0;
+      if (leftover > 0 && isDustQty(symUpper, leftover, executedPrice)) {
+        dustConverted = Boolean(await convertDustToBnb(baseAsset));
+        await updateAccountBalances();
+      }
+    }
+
+    if (source !== "bot") {
+      sendTelegramAlert(
+        `✅ <b>TRADE EXECUTED (${sideUpper})</b>\n\n` +
+          `<b>Symbol:</b> ${symUpper}\n` +
+          `<b>Amount:</b> $${executedUsdt.toFixed(2)} USDT (${executedQty} ${baseAsset})\n` +
+          `<b>Executed Price:</b> $${executedPrice}\n` +
+          (economics.commissionUsdt || economics.baseCommission
+            ? `<b>Fees:</b> $${economics.commissionUsdt.toFixed(4)} USDT` + (economics.baseCommission ? ` + ${economics.baseCommission} ${baseAsset}` : "") + `\n`
+            : "") +
+          (dustConverted ? `<b>Dust:</b> leftover ${baseAsset} converted to BNB\n` : "") +
+          `<b>Order ID:</b> <code>${result.orderId}</code>`,
+      );
+    }
+
+    return {
+      success: true,
+      orderId: result.orderId,
+      symbol: symUpper,
+      side: sideUpper,
+      executedPrice,
+      executedQty,
+      executedUsdt,
+      dustConverted,
+      details: result,
+      economics,
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+function botOpenPositionCount() {
+  return Object.keys(botSession.positions || {}).length;
+}
+
+async function botMaybeBuy(symbol, closePrice, rsi) {
+  if (!botSession.enabled || botSession.busy) return;
+  if (botOpenPositionCount() > 0) return;
+
+  const minNotional = getMinNotional(symbol);
+  const amount = Math.min(config.tradeAmountUsdt, botSession.cashUsdt);
+  const wallet = availableBalances.USDT || 0;
+
+  if (amount + 1e-8 < minNotional) {
+    botSession.lastAction = `Skipped BUY ${symbol} · cash $${botSession.cashUsdt.toFixed(2)} below min notional`;
+    persistBotSession();
+    return;
+  }
+  if (wallet + 1e-8 < amount) {
+    botSession.lastAction = `Skipped BUY ${symbol} · wallet has $${wallet.toFixed(2)} USDT`;
+    persistBotSession();
+    return;
+  }
+
+  botSession.busy = true;
+  try {
+    const result = await placeMarketOrder({ symbol, side: "BUY", usdtAmount: amount, source: "bot" });
+    if (!result.success) {
+      botSession.lastAction = `BUY failed ${symbol}: ${result.error}`;
+      persistBotSession();
+      return;
+    }
+
+    botSession.cashUsdt = Math.max(0, botSession.cashUsdt - result.executedUsdt);
+    botSession.positions[result.symbol] = {
+      qty: result.executedQty,
+      costUsdt: result.executedUsdt,
+      entryPrice: result.executedPrice,
+      orderId: result.orderId,
+    };
+    botSession.lastAction = `BOUGHT ${result.symbol} $${result.executedUsdt.toFixed(2)}`;
+    persistBotSession();
+
+    const alertId = recordStrategyAlert({ symbol: result.symbol, action: "BUY", signalType: "BOT_BUY", price: closePrice, rsi });
+    markAlertExecuted(alertId, result.orderId);
+    sendChannelTelegram(
+      "crypto",
+      `🤖 <b>AUTOPILOT BUY (${result.symbol})</b>\n\n` +
+        `<b>Spent:</b> $${result.executedUsdt.toFixed(2)} USDT\n` +
+        `<b>Price:</b> $${result.executedPrice}\n` +
+        `<b>RSI:</b> ${typeof rsi === "number" ? rsi.toFixed(2) : "--"}\n` +
+        `<b>Bot cash left:</b> $${botSession.cashUsdt.toFixed(2)}\n` +
+        `<b>Order:</b> <code>${result.orderId}</code>`,
+    );
+    maybeSessionPnlAlert();
+  } finally {
+    botSession.busy = false;
+  }
+}
+
+async function botMaybeSell(symbol, reason, rsi, { force = false } = {}) {
+  const pos = botSession.positions[symbol];
+  if (!pos) return { success: false, error: "No autopilot position." };
+  if (!force && (!botSession.enabled || botSession.busy)) return { success: false, error: "Autopilot busy." };
+
+  const ownedBusy = !botSession.busy;
+  botSession.busy = true;
+  try {
+    const result = await placeMarketOrder({ symbol, side: "SELL", quantity: pos.qty, source: "bot" });
+    if (!result.success) {
+      botSession.lastAction = `SELL failed ${symbol}: ${result.error}`;
+      persistBotSession();
+      return result;
+    }
+
+    const proceeds = result.executedUsdt || 0;
+    const pnl = proceeds - (parseFloat(pos.costUsdt) || 0);
+    botSession.cashUsdt += proceeds;
+    botSession.realizedPnl += pnl;
+    delete botSession.positions[symbol];
+    botSession.lastAction = `${reason || "SOLD"} ${symbol} $${proceeds.toFixed(2)} (${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)})`;
+    persistBotSession();
+
+    const alertId = recordStrategyAlert({
+      symbol,
+      action: "SELL",
+      signalType: reason === "STOP_LOSS" ? "BOT_STOP_LOSS" : reason === "TAKE_PROFIT" ? "BOT_TAKE_PROFIT" : "BOT_SELL",
+      price: result.executedPrice,
+      rsi,
+    });
+    markAlertExecuted(alertId, result.orderId);
+    sendChannelTelegram(
+      "crypto",
+      `🤖 <b>AUTOPILOT ${reason || "SELL"} (${symbol})</b>\n\n` +
+        `<b>Proceeds:</b> $${proceeds.toFixed(2)} USDT\n` +
+        `<b>Clip P/L:</b> ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}\n` +
+        `<b>Price:</b> $${result.executedPrice}\n` +
+        `<b>Bot cash:</b> $${botSession.cashUsdt.toFixed(2)}\n` +
+        `<b>Order:</b> <code>${result.orderId}</code>`,
+    );
+    maybeSessionPnlAlert();
+    return result;
+  } finally {
+    if (ownedBusy) botSession.busy = false;
+  }
+}
+
+function parseBotBudget(value) {
+  const n = parseFloat(value);
+  if (!Number.isFinite(n)) return { error: "Enter a USDT budget." };
+  if (n < 5) return { error: "Autopilot budget must be at least $5 (Binance min notional)." };
+  if (n > 200) return { error: "Autopilot budget is capped at $200 for this terminal." };
+  return { value: parseFloat(n.toFixed(2)) };
+}
+
+function parseBotAlertPercent(value, label) {
+  const n = parseFloat(value);
+  if (!Number.isFinite(n) || n <= 0 || n > 50) return { error: `${label} must be between 0.1 and 50.` };
+  return { value: parseFloat(n.toFixed(2)) };
+}
+
+async function startBotSession({ budgetUsdt, alertProfitPercent, alertLossPercent }) {
+  await updateAccountBalances();
+  const wallet = availableBalances.USDT || 0;
+  const hasOpen = botOpenPositionCount() > 0;
+
+  if (hasOpen) {
+    botSession.enabled = true;
+    botSession.alertProfitPercent = alertProfitPercent;
+    botSession.alertLossPercent = alertLossPercent;
+    botSession.lastAlertKind = null;
+    botSession.lastAction = `Resumed · ${Object.keys(botSession.positions).join(", ")} still open`;
+    persistBotSession();
+    sendTelegramAlert(
+      `🤖 <b>AUTOPILOT RESUMED</b>\n\n` +
+        `<b>Open:</b> ${Object.keys(botSession.positions).join(", ")}\n` +
+        `<b>Cash:</b> $${botSession.cashUsdt.toFixed(2)} USDT\n` +
+        `<b>Alerts:</b> +${alertProfitPercent}% / −${alertLossPercent}%`,
+    );
+    return { success: true, resumed: true, status: getBotStatus() };
+  }
+
+  if (wallet + 1e-8 < budgetUsdt) {
+    return { success: false, error: `Need $${budgetUsdt.toFixed(2)} USDT. Spot wallet has $${wallet.toFixed(2)}.` };
+  }
+
+  botSession = {
+    ...createIdleBotSession(),
+    enabled: true,
+    startedAt: Date.now(),
+    budgetUsdt,
+    alertProfitPercent,
+    alertLossPercent,
+    startingEquity: budgetUsdt,
+    cashUsdt: budgetUsdt,
+    lastAction: `Armed · $${budgetUsdt.toFixed(2)} USDT · waiting for RSI`,
+  };
+  persistBotSession();
+  sendTelegramAlert(
+    `🤖 <b>AUTOPILOT ON</b>\n\n` +
+      `<b>Budget:</b> $${budgetUsdt.toFixed(2)} USDT\n` +
+      `<b>Clip size:</b> $${Number(config.tradeAmountUsdt).toFixed(2)} (strategy default)\n` +
+      `<b>Alerts:</b> +${alertProfitPercent}% / −${alertLossPercent}% session P/L\n` +
+      `<b>Pairs:</b> <code>${SYMBOLS.map((s) => s.toUpperCase()).join(", ")}</code>\n` +
+      `<b>Exits:</b> fee-aware TP ${config.takeProfitPercent}% / SL ${config.stopLossPercent}%`,
+  );
+  return { success: true, resumed: false, status: getBotStatus() };
+}
+
+async function stopBotSession() {
+  botSession.enabled = false;
+  botSession.busy = true;
+  const symbols = Object.keys(botSession.positions || {});
+  const errors = [];
+
+  for (const symbol of symbols) {
+    const result = await botMaybeSell(symbol, "FLATTEN", null, { force: true });
+    if (result && result.success === false) errors.push(`${symbol}: ${result.error}`);
+  }
+
+  const parked = parseFloat(botSession.cashUsdt) || 0;
+  const pnl = (parked) - (parseFloat(botSession.startingEquity) || 0);
+  botSession.lastAction = errors.length
+    ? `Stop incomplete · ${errors.join("; ")}`
+    : `Stopped · parked $${parked.toFixed(2)} USDT · session ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
+  persistBotSession();
+  botSession.busy = false;
+
+  sendTelegramAlert(
+    `🤖 <b>AUTOPILOT OFF</b>\n\n` +
+      `<b>Parked:</b> $${parked.toFixed(2)} USDT\n` +
+      `<b>Session P/L:</b> ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}\n` +
+      (errors.length ? `<b>Unsold:</b> ${errors.join("; ")}\n` : "") +
+      `<b>Note:</b> Autopilot crypto was flattened. Other Spot holdings were left alone.`,
+  );
+
+  return { success: errors.length === 0, error: errors[0] || null, status: getBotStatus() };
+}
+
 async function convertDustToBnb(asset) {
   const apiKey = process.env.BINANCE_API_KEY;
   const secretKey = process.env.BINANCE_SECRET_KEY;
@@ -931,20 +1401,33 @@ function connectMultiStreamWS() {
         const now = Date.now();
         const cooldownMs = config.cooldownMinutes * 60 * 1000;
 
+        if (botSession.enabled && botSession.positions[sym] && target.lastRsi !== null) {
+          const botSell = evaluateBotSellSignal(sym, closePrice, target.lastRsi);
+          if (botSell?.type === "TAKE_PROFIT" || botSell?.type === "STOP_LOSS") {
+            void botMaybeSell(sym, botSell.type, target.lastRsi).catch((err) => console.error("[AUTOPILOT SELL]", err.message));
+            target.lastSignalTime = now;
+            target.lastStopLossPnl = botSell.type === "STOP_LOSS" ? botSell.netPnl : null;
+          }
+        }
+
         if (target.lastRsi !== null && now - target.lastSignalTime > cooldownMs) {
           const baseAsset = sym.replace("USDT", "");
           const currentAssetBalance = availableBalances[baseAsset] || 0;
           const currentAssetUsdVal = currentAssetBalance * closePrice;
           const usdtBalance = availableBalances["USDT"] || 0;
 
-          if (target.lastRsi <= config.rsiOversold && isVolumeSurge && usdtBalance >= config.tradeAmountUsdt) {
-            recordStrategyAlert({ symbol: sym, action: "BUY", signalType: "BUY", price: closePrice, rsi: target.lastRsi });
-            sendChannelTelegram(
-              "crypto",
-              `⚡ <b>BUY SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Available Cash:</b> $${usdtBalance.toFixed(2)} USDT`,
-            );
+          if (target.lastRsi <= config.rsiOversold && isVolumeSurge && (botSession.enabled || usdtBalance >= config.tradeAmountUsdt)) {
+            if (botSession.enabled) {
+              void botMaybeBuy(sym, closePrice, target.lastRsi).catch((err) => console.error("[AUTOPILOT BUY]", err.message));
+            } else {
+              recordStrategyAlert({ symbol: sym, action: "BUY", signalType: "BUY", price: closePrice, rsi: target.lastRsi });
+              sendChannelTelegram(
+                "crypto",
+                `⚡ <b>BUY SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Available Cash:</b> $${usdtBalance.toFixed(2)} USDT`,
+              );
+            }
             target.lastSignalTime = now;
-          } else if (currentAssetUsdVal >= 5.0) {
+          } else if (currentAssetUsdVal >= 5.0 && !botSession.positions[sym]) {
             const sellSignal = evaluateSellSignal(sym, closePrice, target.lastRsi);
 
             if (sellSignal?.type === "TAKE_PROFIT") {
@@ -1173,12 +1656,13 @@ app.get("/api/settings", (req, res) => {
     success: true,
     config,
     alertConfig,
+    botConfig,
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   });
 });
 
 app.post("/api/settings", express.json(), (req, res) => {
-  const { password, settings, alertSettings } = req.body;
+  const { password, settings, alertSettings, botSettings } = req.body;
 
   if (!password || password !== TRADE_PASSWORD) {
     return res.status(401).json({ success: false, error: "Unauthorized password." });
@@ -1186,7 +1670,8 @@ app.post("/api/settings", express.json(), (req, res) => {
 
   const hasStrategy = settings && typeof settings === "object";
   const hasAlerts = alertSettings && typeof alertSettings === "object";
-  if (!hasStrategy && !hasAlerts) {
+  const hasBot = botSettings && typeof botSettings === "object";
+  if (!hasStrategy && !hasAlerts && !hasBot) {
     return res.status(400).json({ success: false, error: "Invalid settings payload." });
   }
 
@@ -1210,7 +1695,87 @@ app.post("/api/settings", express.json(), (req, res) => {
     console.log("Updated runtime alert settings:", alertConfig);
   }
 
-  return res.json({ success: true, config, alertConfig });
+  if (hasBot) {
+    const budget = botSettings.defaultBudgetUsdt != null ? parseBotBudget(botSettings.defaultBudgetUsdt) : null;
+    const profit = botSettings.alertProfitPercent != null ? parseBotAlertPercent(botSettings.alertProfitPercent, "Profit alert %") : null;
+    const loss = botSettings.alertLossPercent != null ? parseBotAlertPercent(botSettings.alertLossPercent, "Loss alert %") : null;
+    if (budget?.error) return res.status(400).json({ success: false, error: budget.error });
+    if (profit?.error) return res.status(400).json({ success: false, error: profit.error });
+    if (loss?.error) return res.status(400).json({ success: false, error: loss.error });
+    if (budget) botConfig.defaultBudgetUsdt = budget.value;
+    if (profit) botConfig.alertProfitPercent = profit.value;
+    if (loss) botConfig.alertLossPercent = loss.value;
+    Object.keys(botConfig).forEach((key) => saveSettingToDb(key, botConfig[key]));
+    console.log("Updated runtime bot settings:", botConfig);
+  }
+
+  return res.json({ success: true, config, alertConfig, botConfig });
+});
+
+app.get("/api/bot/status", (req, res) => {
+  res.json({ success: true, ...getBotStatus() });
+});
+
+app.post("/api/bot/start", express.json(), async (req, res) => {
+  const { password, budgetUsdt, alertProfitPercent, alertLossPercent } = req.body || {};
+  if (!password || password !== TRADE_PASSWORD) {
+    return res.status(401).json({ success: false, error: "Unauthorized: Incorrect password." });
+  }
+  if (botSession.enabled) {
+    return res.status(400).json({ success: false, error: "Autopilot is already on.", status: getBotStatus() });
+  }
+
+  const budget = parseBotBudget(budgetUsdt ?? botConfig.defaultBudgetUsdt);
+  const profit = parseBotAlertPercent(alertProfitPercent ?? botConfig.alertProfitPercent, "Profit alert %");
+  const loss = parseBotAlertPercent(alertLossPercent ?? botConfig.alertLossPercent, "Loss alert %");
+  if (budget.error) return res.status(400).json({ success: false, error: budget.error });
+  if (profit.error) return res.status(400).json({ success: false, error: profit.error });
+  if (loss.error) return res.status(400).json({ success: false, error: loss.error });
+
+  botConfig.defaultBudgetUsdt = budget.value;
+  botConfig.alertProfitPercent = profit.value;
+  botConfig.alertLossPercent = loss.value;
+  Object.keys(botConfig).forEach((key) => saveSettingToDb(key, botConfig[key]));
+
+  const result = await startBotSession({
+    budgetUsdt: budget.value,
+    alertProfitPercent: profit.value,
+    alertLossPercent: loss.value,
+  });
+  if (!result.success) return res.status(400).json(result);
+  res.json(result);
+});
+
+app.post("/api/bot/stop", express.json(), async (req, res) => {
+  const { password } = req.body || {};
+  if (!password || password !== TRADE_PASSWORD) {
+    return res.status(401).json({ success: false, error: "Unauthorized: Incorrect password." });
+  }
+  if (!botSession.enabled && botOpenPositionCount() === 0) {
+    return res.json({ success: true, status: getBotStatus() });
+  }
+  const result = await stopBotSession();
+  res.json(result);
+});
+
+app.post("/api/bot/alerts", express.json(), (req, res) => {
+  const { password, alertProfitPercent, alertLossPercent } = req.body || {};
+  if (!password || password !== TRADE_PASSWORD) {
+    return res.status(401).json({ success: false, error: "Unauthorized: Incorrect password." });
+  }
+  const profit = parseBotAlertPercent(alertProfitPercent ?? botSession.alertProfitPercent, "Profit alert %");
+  const loss = parseBotAlertPercent(alertLossPercent ?? botSession.alertLossPercent, "Loss alert %");
+  if (profit.error) return res.status(400).json({ success: false, error: profit.error });
+  if (loss.error) return res.status(400).json({ success: false, error: loss.error });
+
+  botSession.alertProfitPercent = profit.value;
+  botSession.alertLossPercent = loss.value;
+  botSession.lastAlertKind = null;
+  botConfig.alertProfitPercent = profit.value;
+  botConfig.alertLossPercent = loss.value;
+  Object.keys(botConfig).forEach((key) => saveSettingToDb(key, botConfig[key]));
+  persistBotSession();
+  res.json({ success: true, status: getBotStatus() });
 });
 
 app.get("/api/alerts", (req, res) => {
@@ -1415,124 +1980,11 @@ app.post("/api/trade", express.json(), async (req, res) => {
     return res.status(401).json({ success: false, error: "Unauthorized: Incorrect password." });
   }
 
-  const apiKey = process.env.BINANCE_API_KEY;
-  const secretKey = process.env.BINANCE_SECRET_KEY;
-
-  if (!apiKey || !secretKey) {
-    return res.status(500).json({ success: false, error: "Missing API keys." });
+  const result = await placeMarketOrder({ symbol, side, usdtAmount, quantity, sellAll, alertId, source: "manual" });
+  if (!result.success) {
+    return res.status(result.error && /Unauthorized|Missing API/.test(result.error) ? 500 : 400).json(result);
   }
-
-  try {
-    const symUpper = symbol.toUpperCase();
-    const baseAsset = symUpper.replace("USDT", "");
-    const isSell = side.toUpperCase() === "SELL";
-    const clearWallet = isSell && (sellAll || !quantity);
-    let tradeAmount = usdtAmount || config.tradeAmountUsdt;
-
-    let queryParams = `symbol=${symUpper}&side=${side.toUpperCase()}&type=MARKET`;
-
-    if (isSell) {
-      await updateAccountBalances();
-      const freeQty = availableBalances[baseAsset] || 0;
-      let rawQty = clearWallet ? freeQty : Math.min(parseFloat(quantity) || 0, freeQty);
-
-      if (rawQty <= 0) {
-        return res.status(400).json({ success: false, error: `No available ${baseAsset} balance to sell.` });
-      }
-
-      const markPrice = marketData[symUpper]?.prices.slice(-1)[0] || 0;
-      const formattedQty = formatQuantity(symUpper, rawQty);
-
-      if (!parseFloat(formattedQty) || isDustQty(symUpper, formattedQty, markPrice)) {
-        const dust = await convertDustToBnb(baseAsset);
-        await updateAccountBalances();
-        if (dust) {
-          return res.json({
-            success: true,
-            orderId: null,
-            dustConverted: true,
-            symbol: symUpper,
-            side: "SELL",
-            details: dust,
-          });
-        }
-        return res.status(400).json({ success: false, error: `${baseAsset} balance is below Binance LOT_SIZE / min notional.` });
-      }
-
-      queryParams += `&quantity=${formattedQty}`;
-    } else {
-      queryParams += `&quoteOrderQty=${tradeAmount}`;
-    }
-
-    const timestamp = Date.now();
-    queryParams += `&timestamp=${timestamp}`;
-    const signature = crypto.createHmac("sha256", secretKey).update(queryParams).digest("hex");
-
-    const response = await fetch(`https://api.binance.com/api/v3/order?${queryParams}&signature=${signature}`, {
-      method: "POST",
-      headers: {
-        "X-MBX-APIKEY": apiKey,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-    });
-
-    const result = await response.json();
-
-    if (result.orderId) {
-      const economics = summarizeOrderFills(result, symUpper, side);
-      const executedPrice = parseFloat(result.fills?.[0]?.price || marketData[symUpper]?.prices.slice(-1)[0] || 0);
-      const executedQty = economics.netQty;
-      const executedUsdt = economics.recordedUsdt || parseFloat(result.cummulativeQuoteQty || tradeAmount || executedQty * executedPrice);
-
-      db.run(`INSERT INTO trades (symbol, side, price, qty, usdt_amount, order_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
-        symUpper,
-        side.toUpperCase(),
-        executedPrice,
-        executedQty,
-        executedUsdt,
-        String(result.orderId),
-        timestamp,
-      ]);
-      saveDatabase();
-      markAlertExecuted(alertId, result.orderId);
-      await updateAccountBalances();
-
-      let dustConverted = false;
-      if (clearWallet) {
-        const leftover = availableBalances[baseAsset] || 0;
-        if (leftover > 0 && isDustQty(symUpper, leftover, executedPrice)) {
-          dustConverted = Boolean(await convertDustToBnb(baseAsset));
-          await updateAccountBalances();
-        }
-      }
-
-      sendTelegramAlert(
-        `✅ <b>TRADE EXECUTED (${side.toUpperCase()})</b>\n\n` +
-          `<b>Symbol:</b> ${symUpper}\n` +
-          `<b>Amount:</b> $${executedUsdt.toFixed(2)} USDT (${executedQty} ${baseAsset})\n` +
-          `<b>Executed Price:</b> $${executedPrice}\n` +
-          (economics.commissionUsdt || economics.baseCommission
-            ? `<b>Fees:</b> $${economics.commissionUsdt.toFixed(4)} USDT` + (economics.baseCommission ? ` + ${economics.baseCommission} ${baseAsset}` : "") + `\n`
-            : "") +
-          (dustConverted ? `<b>Dust:</b> leftover ${baseAsset} converted to BNB\n` : "") +
-          `<b>Order ID:</b> <code>${result.orderId}</code>`,
-      );
-
-      return res.json({
-        success: true,
-        orderId: result.orderId,
-        symbol: symUpper,
-        side: side.toUpperCase(),
-        executedPrice,
-        dustConverted,
-        details: result,
-      });
-    } else {
-      return res.status(400).json({ success: false, error: result.msg || "Order rejected by Binance" });
-    }
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
+  return res.json(result);
 });
 
 app.use(express.static("public"));
@@ -1542,6 +1994,9 @@ app.use(express.static("public"));
   await fetchExchangeInfo();
   await updateAccountBalances();
   setInterval(updateAccountBalances, 15000);
+  setInterval(() => {
+    if (botSession.enabled) maybeSessionPnlAlert();
+  }, 30000);
   await bootstrapHistoricalData();
   await bootstrapStockHistoricalData();
   connectMultiStreamWS();

@@ -86,6 +86,75 @@
         background: rgba(255, 255, 255, 0.15);
       }
 
+      .bot-chip {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--border-color);
+        color: #eaecef;
+        padding: 0.4rem 1rem;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 700;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+
+      .bot-chip.on {
+        background: rgba(14, 203, 129, 0.18);
+        border-color: var(--green-up);
+        color: var(--green-up);
+      }
+
+      .bot-chip.loss {
+        background: rgba(246, 70, 93, 0.16);
+        border-color: var(--red-down);
+        color: var(--red-down);
+      }
+
+      .bot-strip {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 0.65rem 1.1rem;
+        margin: 0.85rem 0 0 0;
+        padding: 0.55rem 0.85rem;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid var(--border-color);
+        border-radius: 10px;
+        font-size: 0.78rem;
+        color: var(--text-muted);
+      }
+
+      .bot-strip strong {
+        color: #eaecef;
+        font-weight: 700;
+      }
+
+      .bot-strip .up {
+        color: var(--green-up);
+      }
+
+      .bot-strip .down {
+        color: var(--red-down);
+      }
+
+      .bot-status-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.55rem 0.75rem;
+        margin-bottom: 1rem;
+        font-size: 0.82rem;
+      }
+
+      .bot-status-grid span {
+        color: var(--text-muted);
+      }
+
+      .bot-status-grid b {
+        display: block;
+        margin-top: 0.15rem;
+        color: #eaecef;
+      }
+
       .container {
         max-width: 1200px;
         margin: 0 auto;
@@ -758,8 +827,15 @@
 
         <div class="override-bar">
           <button id="unlock-btn" onclick="toggleManualUnlock()" class="override-btn">🔓 Unlock Impulse Trade Controls</button>
+          <button id="bot-chip" class="bot-chip" onclick="openBotModal()">🤖 Autopilot · OFF</button>
           <button onclick="openSettingsModal()" class="settings-btn">⚙️ Strategy Settings</button>
           <button onclick="openAlertSettingsModal()" class="settings-btn">🔔 Alert Settings</button>
+        </div>
+        <div class="bot-strip" id="bot-strip">
+          <span><strong id="bot-strip-state">Autopilot · OFF</strong></span>
+          <span>Session <strong id="bot-strip-pnl">$0.00</strong></span>
+          <span>Capital <strong id="bot-strip-equity">$0.00</strong></span>
+          <span id="bot-strip-action">Idle</span>
         </div>
       </header>
 
@@ -937,6 +1013,21 @@
           <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">0.1 standard, 0.075 with BNB fee discount. Used to keep SALE alerts net of fees.</div>
         </div>
 
+        <div style="font-weight: 700; color: var(--accent-yellow); margin: 1.1rem 0 0.75rem">🤖 Autopilot defaults</div>
+        <div class="form-group">
+          <label>Default Autopilot Budget (USDT)</label>
+          <input type="number" id="cfg-botBudget" step="0.5" min="5" max="200" placeholder="20" />
+        </div>
+        <div class="form-group">
+          <label>Session Profit Alert (%)</label>
+          <input type="number" id="cfg-botProfitAlert" step="0.1" min="0.1" max="50" placeholder="3" />
+        </div>
+        <div class="form-group">
+          <label>Session Loss Alert (%)</label>
+          <input type="number" id="cfg-botLossAlert" step="0.1" min="0.1" max="50" placeholder="3" />
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">Telegram only. The bot still exits clips using fee-aware take-profit / stop-loss.</div>
+        </div>
+
         <div class="form-group">
           <label>Trading Password</label>
           <input type="password" id="settingsPasswordInput" placeholder="Enter password to save" />
@@ -1007,6 +1098,51 @@
       </div>
     </div>
 
+    <div class="modal-overlay" id="botModal">
+      <div class="modal">
+        <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-yellow); margin-bottom: 0.4rem">🤖 Autopilot</div>
+        <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 1rem">
+          Trades the monitored Spot pairs on 1-minute RSI + volume surge. One clip at a time, fee-aware TP/SL, budget isolated from the rest of your wallet.
+        </div>
+
+        <div class="bot-status-grid">
+          <div><span>Status</span><b id="bot-modal-state">OFF</b></div>
+          <div><span>Wallet USDT</span><b id="bot-modal-wallet">$0.00</b></div>
+          <div><span>Session P/L</span><b id="bot-modal-pnl">$0.00</b></div>
+          <div><span>Bot capital</span><b id="bot-modal-equity">$0.00</b></div>
+          <div><span>Bot cash</span><b id="bot-modal-cash">$0.00</b></div>
+          <div><span>Open clip</span><b id="bot-modal-position">None</b></div>
+        </div>
+        <div style="font-size: 0.78rem; color: var(--text-muted); margin: -0.35rem 0 1rem" id="bot-modal-action">Idle</div>
+
+        <div class="form-group" id="bot-budget-group">
+          <label>USDT to auto-trade</label>
+          <input type="number" id="bot-budget-input" min="5" max="200" step="0.5" placeholder="20" />
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">Must be sitting in Spot USDT. Each clip uses the strategy default trade amount.</div>
+        </div>
+        <div class="form-group">
+          <label>Telegram profit alert (%)</label>
+          <input type="number" id="bot-profit-input" min="0.1" max="50" step="0.1" placeholder="3" />
+        </div>
+        <div class="form-group">
+          <label>Telegram loss alert (%)</label>
+          <input type="number" id="bot-loss-input" min="0.1" max="50" step="0.1" placeholder="3" />
+        </div>
+
+        <div class="form-group">
+          <label>Trading Password Required</label>
+          <input type="password" id="botPasswordInput" placeholder="Enter password" />
+        </div>
+
+        <div style="display: flex; gap: 0.75rem; justify-content: flex-end; flex-wrap: wrap; margin-top: 1.25rem">
+          <button class="time-btn" onclick="closeBotModal()" style="padding: 0.5rem 1rem">Close</button>
+          <button class="time-btn" id="bot-alerts-btn" onclick="updateBotAlerts()" style="padding: 0.5rem 1rem; display: none">Update alerts</button>
+          <button class="time-btn" id="bot-stop-btn" onclick="stopBotFromModal()" style="padding: 0.5rem 1rem; display: none; background: var(--red-down); color: #fff">Stop & park in USDT</button>
+          <button class="time-btn active" id="bot-toggle-btn" onclick="toggleBotFromModal()" style="padding: 0.5rem 1rem">Start Autopilot</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       const charts = {};
       let isManualUnlocked = false;
@@ -1025,6 +1161,8 @@
       let tradeAmountUsdt = 5.5;
       let lastStrategyConfig = { rsiOversold: 32, rsiOverbought: 70 };
       const lastStockPrices = {};
+      let lastBotStatus = { enabled: false, lastAction: "Idle" };
+      let lastBotActionSeen = "";
 
       function formatTradeAmount(amount = tradeAmountUsdt) {
         const n = parseFloat(amount);
@@ -1046,6 +1184,200 @@
         });
         const emptyThreshold = document.getElementById("empty-buy-threshold");
         if (emptyThreshold) emptyThreshold.textContent = formatTradeAmount();
+      }
+
+      function money(n) {
+        const v = parseFloat(n);
+        if (!Number.isFinite(v)) return "$0.00";
+        return `${v >= 0 ? "" : "-"}$${Math.abs(v).toFixed(2)}`;
+      }
+
+      function signedMoney(n) {
+        const v = parseFloat(n);
+        if (!Number.isFinite(v)) return "$0.00";
+        return `${v >= 0 ? "+" : "-"}$${Math.abs(v).toFixed(2)}`;
+      }
+
+      function applyBotStatus(data) {
+        if (!data) return;
+        lastBotStatus = data;
+        const on = Boolean(data.enabled);
+        const pnl = parseFloat(data.pnl) || 0;
+        const chip = document.getElementById("bot-chip");
+        if (chip) {
+          chip.textContent = on ? `🤖 Autopilot · ON ${signedMoney(pnl)}` : "🤖 Autopilot · OFF";
+          chip.className = `bot-chip${on ? (pnl < 0 ? " loss" : " on") : ""}`;
+        }
+
+        const stateEl = document.getElementById("bot-strip-state");
+        const pnlEl = document.getElementById("bot-strip-pnl");
+        const eqEl = document.getElementById("bot-strip-equity");
+        const actEl = document.getElementById("bot-strip-action");
+        if (stateEl) stateEl.textContent = on ? "Autopilot · ON" : "Autopilot · OFF";
+        if (pnlEl) {
+          pnlEl.textContent = `${signedMoney(pnl)} (${(parseFloat(data.pnlPercent) || 0).toFixed(2)}%)`;
+          pnlEl.className = pnl < 0 ? "down" : "up";
+        }
+        if (eqEl) eqEl.textContent = money(data.equity);
+        if (actEl) actEl.textContent = data.lastAction || "Idle";
+
+        const modalOpen = document.getElementById("botModal")?.classList.contains("active");
+        if (modalOpen) fillBotModal(data);
+
+        if (data.lastAction && data.lastAction !== lastBotActionSeen) {
+          const previous = lastBotActionSeen;
+          lastBotActionSeen = data.lastAction;
+          if (previous && /BOUGHT|SOLD|TAKE_PROFIT|STOP_LOSS|Stopped|parked|Resumed|Armed/.test(data.lastAction)) {
+            fetchHoldings();
+            fetchPnL();
+            fetchTradeOutcomes();
+            fetchStrategyAlerts();
+          }
+        }
+      }
+
+      function fillBotModal(data) {
+        const on = Boolean(data.enabled);
+        const pos = Array.isArray(data.positions) && data.positions[0];
+        const setText = (id, text) => {
+          const el = document.getElementById(id);
+          if (el) el.textContent = text;
+        };
+        setText("bot-modal-state", on ? "ON" : "OFF");
+        setText("bot-modal-wallet", money(data.usdtWallet));
+        setText("bot-modal-pnl", `${signedMoney(data.pnl)} (${(parseFloat(data.pnlPercent) || 0).toFixed(2)}%)`);
+        setText("bot-modal-equity", money(data.equity));
+        setText("bot-modal-cash", money(data.cashUsdt));
+        setText("bot-modal-position", pos ? `${pos.symbol} · ${money(pos.usd)}` : "None");
+        setText("bot-modal-action", data.lastAction || "Idle");
+
+        const budgetGroup = document.getElementById("bot-budget-group");
+        const toggleBtn = document.getElementById("bot-toggle-btn");
+        const alertsBtn = document.getElementById("bot-alerts-btn");
+        const stopBtn = document.getElementById("bot-stop-btn");
+        const hasOpen = Boolean(pos);
+        if (budgetGroup) budgetGroup.style.display = on ? "none" : "block";
+        if (alertsBtn) alertsBtn.style.display = on ? "inline-block" : "none";
+        if (stopBtn) stopBtn.style.display = on || hasOpen ? "inline-block" : "none";
+        if (toggleBtn) {
+          toggleBtn.style.display = on ? "none" : "inline-block";
+          toggleBtn.textContent = hasOpen ? "Resume Autopilot" : "Start Autopilot";
+        }
+      }
+
+      async function fetchBotStatus() {
+        try {
+          const res = await fetch("api/bot/status");
+          const data = await res.json();
+          if (data.success) applyBotStatus(data);
+        } catch (err) {
+          console.error("Bot status error:", err);
+        }
+      }
+
+      async function openBotModal() {
+        await fetchBotStatus();
+        const data = lastBotStatus || {};
+        const budgetInput = document.getElementById("bot-budget-input");
+        const profitInput = document.getElementById("bot-profit-input");
+        const lossInput = document.getElementById("bot-loss-input");
+        if (budgetInput) budgetInput.value = data.budgetUsdt || data.defaults?.defaultBudgetUsdt || 20;
+        if (profitInput) profitInput.value = data.alertProfitPercent || data.defaults?.alertProfitPercent || 3;
+        if (lossInput) lossInput.value = data.alertLossPercent || data.defaults?.alertLossPercent || 3;
+        fillBotModal(data);
+        document.getElementById("botPasswordInput").value = "";
+        document.getElementById("botModal").classList.add("active");
+      }
+
+      function closeBotModal() {
+        document.getElementById("botModal").classList.remove("active");
+        const pw = document.getElementById("botPasswordInput");
+        if (pw) pw.value = "";
+      }
+
+      async function postBotCommand(url, payload, btn) {
+        const password = document.getElementById("botPasswordInput").value.trim();
+        if (!password) {
+          showToast("Password Required", "Enter your trading password.", "error");
+          return null;
+        }
+        if (btn) btn.disabled = true;
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password, ...payload }),
+          });
+          return await res.json();
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+      }
+
+      async function toggleBotFromModal() {
+        const data = await postBotCommand(
+          "api/bot/start",
+          {
+            budgetUsdt: parseFloat(document.getElementById("bot-budget-input").value),
+            alertProfitPercent: parseFloat(document.getElementById("bot-profit-input").value),
+            alertLossPercent: parseFloat(document.getElementById("bot-loss-input").value),
+          },
+          document.getElementById("bot-toggle-btn"),
+        );
+        if (!data) return;
+        if (!data.success) {
+          showToast("Autopilot Blocked", data.error || "Could not start Autopilot.", "error");
+        } else {
+          showToast(data.resumed ? "Autopilot Resumed" : "Autopilot On", data.status?.lastAction || "Watching RSI on monitored pairs.", "success");
+        }
+        if (data.status) applyBotStatus(data.status);
+        fillBotModal(lastBotStatus);
+        document.getElementById("botPasswordInput").value = "";
+      }
+
+      async function stopBotFromModal() {
+        const data = await postBotCommand("api/bot/stop", {}, document.getElementById("bot-stop-btn"));
+        if (!data) return;
+        if (!data.success && data.error) {
+          showToast("Stop Incomplete", data.error, "error");
+        } else {
+          showToast("Autopilot Off", data.status?.lastAction || "Parked remaining bot capital in USDT.", "success");
+        }
+        if (data.status) applyBotStatus(data.status);
+        fillBotModal(lastBotStatus);
+        document.getElementById("botPasswordInput").value = "";
+        fetchHoldings();
+        fetchPnL();
+        fetchTradeOutcomes();
+      }
+
+      async function updateBotAlerts() {
+        const password = document.getElementById("botPasswordInput").value.trim();
+        if (!password) {
+          showToast("Password Required", "Enter your trading password to update alerts.", "error");
+          return;
+        }
+        try {
+          const res = await fetch("api/bot/alerts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              password,
+              alertProfitPercent: parseFloat(document.getElementById("bot-profit-input").value),
+              alertLossPercent: parseFloat(document.getElementById("bot-loss-input").value),
+            }),
+          });
+          const data = await res.json();
+          if (!data.success) {
+            showToast("Update Failed", data.error || "Could not update alerts.", "error");
+            return;
+          }
+          if (data.status) applyBotStatus(data.status);
+          showToast("Alerts Updated", `Telegram will fire at +${data.status.alertProfitPercent}% / −${data.status.alertLossPercent}%.`, "success");
+          document.getElementById("botPasswordInput").value = "";
+        } catch (err) {
+          showToast("Error", err.message, "error");
+        }
       }
 
       function showToast(title, message, type = "info", duration = 4000) {
@@ -1207,6 +1539,10 @@
       function alertHeadline(alert) {
         if (alert.signalType === "STOCK_BUY" || (alert.source === "stocks" && alert.action === "BUY")) return "📈 STOCK BUY";
         if (alert.signalType === "STOCK_OVERBOUGHT" || alert.action === "OVERBOUGHT") return "📊 STOCK OVERBOUGHT";
+        if (alert.signalType === "BOT_BUY") return "🤖 AUTOPILOT BUY";
+        if (alert.signalType === "BOT_TAKE_PROFIT") return "🤖 AUTOPILOT TP";
+        if (alert.signalType === "BOT_STOP_LOSS") return "🤖 AUTOPILOT SL";
+        if (alert.signalType === "BOT_SELL") return "🤖 AUTOPILOT SELL";
         if (alert.action === "BUY") return "⚡ BUY SIGNAL";
         if (alert.signalType === "TAKE_PROFIT") return "🎯 TAKE PROFIT";
         if (alert.signalType === "STOP_LOSS") return "🛑 STOP LOSS";
@@ -1385,7 +1721,8 @@
 
         pageAlerts.forEach((alert) => {
           const item = document.createElement("div");
-          const isExecuted = executedAlerts.has(alert.id) || alert.executed;
+          const isBot = String(alert.signalType || "").startsWith("BOT_");
+          const isExecuted = executedAlerts.has(alert.id) || alert.executed || isBot;
           const isStock = alert.source === "stocks" || String(alert.signalType || "").startsWith("STOCK_");
           item.id = `alert-card-${alert.id}`;
           item.className = `log-item ${alert.action === "BUY" ? "buy-alert" : "sell-alert"} ${isExecuted ? "executed" : ""}`;
@@ -1439,6 +1776,11 @@
             document.getElementById("cfg-takeProfit").value = data.config.takeProfitPercent;
             document.getElementById("cfg-stopLoss").value = data.config.stopLossPercent;
             document.getElementById("cfg-takerFee").value = data.config.takerFeePercent ?? 0.1;
+            if (data.botConfig) {
+              document.getElementById("cfg-botBudget").value = data.botConfig.defaultBudgetUsdt ?? 20;
+              document.getElementById("cfg-botProfitAlert").value = data.botConfig.alertProfitPercent ?? 3;
+              document.getElementById("cfg-botLossAlert").value = data.botConfig.alertLossPercent ?? 3;
+            }
           }
         } catch (err) {
           console.error("Settings load error:", err);
@@ -1555,12 +1897,17 @@
           stopLossPercent: parseFloat(document.getElementById("cfg-stopLoss").value),
           takerFeePercent: parseFloat(document.getElementById("cfg-takerFee").value),
         };
+        const botSettings = {
+          defaultBudgetUsdt: parseFloat(document.getElementById("cfg-botBudget").value),
+          alertProfitPercent: parseFloat(document.getElementById("cfg-botProfitAlert").value),
+          alertLossPercent: parseFloat(document.getElementById("cfg-botLossAlert").value),
+        };
 
         try {
           const res = await fetch("api/settings", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ password, settings }),
+            body: JSON.stringify({ password, settings, botSettings }),
           });
 
           const data = await res.json();
@@ -1991,6 +2338,7 @@
       setInterval(updateDashboard, 2000);
       setInterval(updateStocksDashboard, 2000);
       setInterval(fetchStrategyAlerts, 2000);
+      setInterval(fetchBotStatus, 2000);
       setInterval(refreshAlertDurations, 1000);
       loadTradeOutcomes();
       renderAlertPage(1);
@@ -2001,6 +2349,7 @@
       fetchHoldings();
       fetchTradeOutcomes();
       fetchPnL();
+      fetchBotStatus();
     </script>
   </body>
 </html>
