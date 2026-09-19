@@ -830,9 +830,12 @@
       </div>
 
       <div class="outcomes-container">
-        <div style="font-weight: 700; margin-bottom: 0.75rem">💾 Trade Outcome Ledger</div>
+        <div class="panel-header" style="margin-bottom: 0.5rem">
+          <span>💾 Trade Outcome Ledger</span>
+          <button class="time-btn" id="refresh-outcomes-btn" onclick="fetchTradeOutcomes(true)">🔄 Refresh</button>
+        </div>
         <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem">
-          Persisted buy/sell actions with success and failure outcomes. A tiny ledger for the trade nerd in all of us.
+          In-app attempts plus Spot fills from the Binance app, website, or this terminal.
         </div>
         <table class="outcome-table">
           <thead>
@@ -847,7 +850,7 @@
           </thead>
           <tbody id="outcomes-body">
             <tr>
-              <td class="outcome-empty" colspan="6" style="color: var(--text-muted); font-style: italic; padding: 1rem 0">No trade outcomes yet. Execute a BUY or SELL to populate the ledger.</td>
+              <td class="outcome-empty" colspan="6" style="color: var(--text-muted); font-style: italic; padding: 1rem 0">Loading Binance Spot fills...</td>
             </tr>
           </tbody>
         </table>
@@ -1230,6 +1233,70 @@
         renderTradeOutcomes(1);
       }
 
+      function formatOutcomeWhen(timestamp) {
+        const d = new Date(timestamp);
+        if (Number.isNaN(d.getTime())) return "--";
+        const now = new Date();
+        if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString();
+        return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      }
+
+      function mergeBinanceTradeOutcomes(remoteTrades) {
+        const remote = Array.isArray(remoteTrades) ? remoteTrades : [];
+        const remoteOrderIds = new Set(remote.map((t) => (t.orderId == null ? "" : String(t.orderId))).filter(Boolean));
+        const localKeep = tradeOutcomes.filter((o) => {
+          if (o.orderId != null && remoteOrderIds.has(String(o.orderId))) return false;
+          return true;
+        });
+        tradeOutcomes = [...remote, ...localKeep].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, outcomeLimit);
+        saveTradeOutcomes();
+        renderTradeOutcomes(1);
+      }
+
+      async function fetchTradeOutcomes(showFeedback = false) {
+        const tbody = document.getElementById("outcomes-body");
+        const btn = document.getElementById("refresh-outcomes-btn");
+        if (showFeedback && btn) {
+          btn.disabled = true;
+          btn.textContent = "Refreshing...";
+        }
+        if (!showFeedback && tradeOutcomes.length === 0 && tbody) {
+          tbody.innerHTML = `
+          <tr>
+            <td class="outcome-empty" colspan="6" style="color:var(--text-muted); font-style:italic; padding:1rem 0;">
+              Loading Binance Spot fills...
+            </td>
+          </tr>`;
+        }
+
+        try {
+          const res = await fetch("api/trades");
+          const data = await res.json();
+          if (!data.success) throw new Error(data.error || "Unable to fetch trades");
+
+          mergeBinanceTradeOutcomes(data.trades);
+          fetchPnL();
+
+          if (showFeedback) {
+            const n = Array.isArray(data.trades) ? data.trades.length : 0;
+            showToast("Ledger Updated", n ? `Loaded ${n} fill${n === 1 ? "" : "s"} from Binance Spot.` : "No Spot fills found for tracked symbols.", n ? "success" : "info");
+          }
+        } catch (err) {
+          console.error("Trade ledger error:", err);
+          if (tradeOutcomes.length === 0 && tbody) {
+            tbody.innerHTML = `<tr><td class="outcome-empty" colspan="6" style="color:var(--red-down); font-style:italic; padding:1rem 0;">Connection Error: Unable to fetch Binance trades.</td></tr>`;
+          }
+          if (showFeedback) {
+            showToast("Refresh Failed", "Unable to fetch Binance Spot trade history.", "error");
+          }
+        } finally {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = "🔄 Refresh";
+          }
+        }
+      }
+
       function renderTradeOutcomes(page = currentOutcomePage) {
         const tbody = document.getElementById("outcomes-body");
         const pager = document.getElementById("outcomes-pager");
@@ -1242,7 +1309,7 @@
           tbody.innerHTML = `
           <tr>
             <td class="outcome-empty" colspan="6" style="color:var(--text-muted); font-style:italic; padding:1rem 0;">
-              No trade outcomes yet. Execute a BUY or SELL to populate the ledger.
+              No trade outcomes yet. Fills from Binance Spot and in-app attempts will show here.
             </td>
           </tr>
         `;
@@ -1260,7 +1327,7 @@
           .map(
             (o) => `
           <tr class="${o.status === "SUCCESS" ? "trade-success" : "trade-failed"}">
-            <td>${new Date(o.timestamp).toLocaleTimeString()}</td>
+            <td>${formatOutcomeWhen(o.timestamp)}</td>
             <td>${o.side}</td>
             <td>${o.symbol}</td>
             <td>$${parseFloat(o.amount).toFixed(2)}</td>
@@ -1932,6 +1999,7 @@
       updateDashboard();
       updateStocksDashboard();
       fetchHoldings();
+      fetchTradeOutcomes();
       fetchPnL();
     </script>
   </body>

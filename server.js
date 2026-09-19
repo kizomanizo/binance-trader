@@ -517,6 +517,181 @@ async function updateAccountBalances() {
   }
 }
 
+function collectSpotTradeSymbols() {
+  const symbols = new Set(SYMBOLS.map((s) => s.toUpperCase()));
+
+  Object.keys(availableBalances).forEach((asset) => {
+    if (!asset || asset === "USDT" || asset === "USD") return;
+    symbols.add(`${asset}USDT`);
+  });
+
+  try {
+    const stmt = db.prepare("SELECT DISTINCT symbol FROM trades");
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      if (row.symbol) symbols.add(String(row.symbol).toUpperCase());
+    }
+    stmt.free();
+  } catch (err) {
+    console.warn("[TRADE HISTORY] Failed to read stored symbols:", err.message);
+  }
+
+  const listed = [...symbols];
+  if (!Object.keys(symbolLotSizes).length) return listed;
+  return listed.filter((sym) => Boolean(symbolLotSizes[sym]));
+}
+
+function knownTradeOrderIds() {
+  const ids = new Set();
+  try {
+    const stmt = db.prepare("SELECT order_id FROM trades");
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      if (row.order_id) ids.add(String(row.order_id));
+    }
+    stmt.free();
+  } catch (err) {
+    console.warn("[TRADE HISTORY] Failed to read stored order ids:", err.message);
+  }
+  return ids;
+}
+
+async function fetchBinanceMyTrades(symbol, limit = 200) {
+  const apiKey = process.env.BINANCE_API_KEY;
+  const secretKey = process.env.BINANCE_SECRET_KEY;
+  if (!apiKey || !secretKey) throw new Error("Missing API keys.");
+
+  const timestamp = Date.now();
+  const query = `symbol=${symbol}&limit=${limit}&timestamp=${timestamp}`;
+  const signature = crypto.createHmac("sha256", secretKey).update(query).digest("hex");
+  const response = await fetch(`https://api.binance.com/api/v3/myTrades?${query}&signature=${signature}`, {
+    headers: { "X-MBX-APIKEY": apiKey },
+  });
+  const data = await response.json();
+
+  if (!Array.isArray(data)) {
+    if (data?.code !== -1121) {
+      console.warn(`[BINANCE MYTRADES ${symbol}]`, data.msg || JSON.stringify(data));
+    }
+    return [];
+  }
+  return data;
+}
+
+function summarizeImportedFills(fills, symbol, side) {
+  const baseAsset = symbol.replace("USDT", "");
+  let commissionUsdt = 0;
+  let baseCommission = 0;
+  let qty = 0;
+  let quoteQty = 0;
+  let timestamp = Date.now();
+
+  fills.forEach((fill) => {
+    qty += parseFloat(fill.qty || 0);
+    quoteQty += parseFloat(fill.quoteQty || 0);
+    if (fill.time) timestamp = Math.min(timestamp, fill.time);
+
+    const commission = parseFloat(fill.commission || 0);
+    if (!commission) return;
+    const asset = fill.commissionAsset;
+    if (asset === "USDT") commissionUsdt += commission;
+    else if (asset === baseAsset) baseCommission += commission;
+    else {
+      const px = getAssetUsdPrice(asset);
+      if (px) commissionUsdt += commission * px;
+    }
+  });
+
+  const isBuy = side.toUpperCase() === "BUY";
+  return {
+    qty: isBuy ? Math.max(0, qty - baseCommission) : qty,
+    usdt: isBuy ? quoteQty + commissionUsdt : Math.max(0, quoteQty - commissionUsdt),
+    price: qty > 0 ? quoteQty / qty : 0,
+    timestamp,
+  };
+}
+
+function aggregateBinanceFills(fills) {
+  const byOrder = new Map();
+
+  fills.forEach((fill) => {
+    const orderId = String(fill.orderId);
+    if (!byOrder.has(orderId)) byOrder.set(orderId, []);
+    byOrder.get(orderId).push(fill);
+  });
+
+  return [...byOrder.entries()].map(([orderId, orderFills]) => {
+    const first = orderFills[0];
+    const symbol = String(first.symbol || "").toUpperCase();
+    const side = first.isBuyer ? "BUY" : "SELL";
+    const economics = summarizeImportedFills(orderFills, symbol, side);
+
+    return {
+      id: `binance_${orderId}`,
+      timestamp: economics.timestamp,
+      symbol,
+      side,
+      amount: parseFloat(economics.usdt.toFixed(2)),
+      status: "SUCCESS",
+      outcome: `Order #${orderId}`,
+      orderId: Number.isFinite(Number(orderId)) ? Number(orderId) : orderId,
+      qty: economics.qty,
+      price: economics.price,
+      source: "binance",
+    };
+  });
+}
+
+function persistImportedTrades(trades) {
+  const known = knownTradeOrderIds();
+  let imported = 0;
+
+  trades.forEach((trade) => {
+    const orderId = trade.orderId == null ? "" : String(trade.orderId);
+    if (!orderId || known.has(orderId)) return;
+
+    db.run(`INSERT INTO trades (symbol, side, price, qty, usdt_amount, order_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
+      trade.symbol,
+      trade.side,
+      trade.price || 0,
+      trade.qty || 0,
+      trade.amount || 0,
+      orderId,
+      trade.timestamp,
+    ]);
+    known.add(orderId);
+    imported++;
+  });
+
+  if (imported) saveDatabase();
+  return imported;
+}
+
+async function syncBinanceTradeHistory() {
+  await updateAccountBalances();
+  const symbols = collectSpotTradeSymbols();
+  const fills = [];
+
+  for (let i = 0; i < symbols.length; i += 5) {
+    const batch = symbols.slice(i, i + 5);
+    const results = await Promise.all(
+      batch.map(async (symbol) => {
+        try {
+          return await fetchBinanceMyTrades(symbol);
+        } catch (err) {
+          console.warn(`[BINANCE MYTRADES ${symbol}]`, err.message);
+          return [];
+        }
+      }),
+    );
+    results.forEach((trades) => fills.push(...trades));
+  }
+
+  const trades = aggregateBinanceFills(fills).sort((a, b) => b.timestamp - a.timestamp);
+  const imported = persistImportedTrades(trades);
+  return { trades, imported, symbols };
+}
+
 async function convertDustToBnb(asset) {
   const apiKey = process.env.BINANCE_API_KEY;
   const secretKey = process.env.BINANCE_SECRET_KEY;
@@ -1135,6 +1310,26 @@ app.get("/api/holdings", async (req, res) => {
     });
 
   res.json({ success: true, balances: activeBalances });
+});
+
+app.get("/api/trades", async (req, res) => {
+  const apiKey = process.env.BINANCE_API_KEY;
+  const secretKey = process.env.BINANCE_SECRET_KEY;
+  if (!apiKey || !secretKey) {
+    return res.status(500).json({ success: false, error: "Missing API keys." });
+  }
+
+  try {
+    const { trades, imported, symbols } = await syncBinanceTradeHistory();
+    res.json({
+      success: true,
+      imported,
+      symbols,
+      trades: trades.map(({ qty, price, ...entry }) => entry),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.get("/api/pnl", (req, res) => {
