@@ -323,6 +323,24 @@ function markToMarketBotPositions() {
   return { value, open };
 }
 
+function describeBotWatch() {
+  const need = config.rsiOversold;
+  const rows = Object.keys(marketData)
+    .map((sym) => ({
+      sym,
+      rsi: marketData[sym]?.lastRsi,
+      surge: Boolean(marketData[sym]?.lastVolumeSurge),
+    }))
+    .filter((row) => typeof row.rsi === "number");
+
+  if (!rows.length) return "Watching · RSI not ready yet (need ~15 closed 1m candles)";
+
+  const best = rows.reduce((a, b) => (a.rsi <= b.rsi ? a : b));
+  const rsiTxt = best.rsi.toFixed(1);
+  if (best.rsi <= need) return `Ready ${best.sym} RSI ${rsiTxt} · placing clip`;
+  return `Watching ${best.sym} RSI ${rsiTxt} · need ≤${need}`;
+}
+
 function getBotStatus() {
   const mt = markToMarketBotPositions();
   const cash = parseFloat(botSession.cashUsdt) || 0;
@@ -330,6 +348,10 @@ function getBotStatus() {
   const starting = parseFloat(botSession.startingEquity) || 0;
   const pnl = botSession.startedAt ? equity - starting : 0;
   const pnlPercent = starting > 0 ? (pnl / starting) * 100 : 0;
+  let lastAction = botSession.lastAction || "Idle";
+  if (botSession.enabled && mt.open.length === 0) {
+    lastAction = describeBotWatch();
+  }
   return {
     enabled: Boolean(botSession.enabled),
     startedAt: botSession.startedAt,
@@ -339,7 +361,7 @@ function getBotStatus() {
     pnl: parseFloat(pnl.toFixed(2)),
     pnlPercent: parseFloat(pnlPercent.toFixed(2)),
     realizedPnl: parseFloat((botSession.realizedPnl || 0).toFixed(2)),
-    lastAction: botSession.lastAction || "Idle",
+    lastAction,
     positions: mt.open,
     alertProfitPercent: botSession.alertProfitPercent,
     alertLossPercent: botSession.alertLossPercent,
@@ -1096,6 +1118,7 @@ async function startBotSession({ budgetUsdt, alertProfitPercent, alertLossPercen
     botSession.lastAlertKind = null;
     botSession.lastAction = `Resumed · ${Object.keys(botSession.positions).join(", ")} still open`;
     persistBotSession();
+    console.log(`[AUTOPILOT] RESUMED · ${Object.keys(botSession.positions).join(", ")}`);
     sendTelegramAlert(
       `🤖 <b>AUTOPILOT RESUMED</b>\n\n` +
         `<b>Open:</b> ${Object.keys(botSession.positions).join(", ")}\n` +
@@ -1118,9 +1141,12 @@ async function startBotSession({ budgetUsdt, alertProfitPercent, alertLossPercen
     alertLossPercent,
     startingEquity: budgetUsdt,
     cashUsdt: budgetUsdt,
-    lastAction: `Armed · $${budgetUsdt.toFixed(2)} USDT · waiting for RSI`,
+    lastAction: `Armed · $${budgetUsdt.toFixed(2)} USDT · watching RSI ≤ ${config.rsiOversold}`,
   };
   persistBotSession();
+  console.log(
+    `[AUTOPILOT] ON · budget $${budgetUsdt.toFixed(2)} · clip $${Number(config.tradeAmountUsdt).toFixed(2)} · buy when RSI ≤ ${config.rsiOversold} · TP ${config.takeProfitPercent}% / SL ${config.stopLossPercent}%`,
+  );
   sendTelegramAlert(
     `🤖 <b>AUTOPILOT ON</b>\n\n` +
       `<b>Budget:</b> $${budgetUsdt.toFixed(2)} USDT\n` +
@@ -1400,6 +1426,14 @@ function connectMultiStreamWS() {
 
         const now = Date.now();
         const cooldownMs = config.cooldownMinutes * 60 * 1000;
+        const botFlat = botOpenPositionCount() === 0;
+        const cooledDown = now - target.lastSignalTime > cooldownMs;
+
+        if (botSession.enabled && target.lastRsi !== null) {
+          console.log(
+            `[AUTOPILOT] ${sym} RSI ${target.lastRsi.toFixed(2)} surge=${isVolumeSurge ? "yes" : "no"} cooldown=${cooledDown ? "ready" : "blocked"} pos=${botSession.positions[sym] ? "open" : "flat"}`,
+          );
+        }
 
         if (botSession.enabled && botSession.positions[sym] && target.lastRsi !== null) {
           const botSell = evaluateBotSellSignal(sym, closePrice, target.lastRsi);
@@ -1410,22 +1444,24 @@ function connectMultiStreamWS() {
           }
         }
 
-        if (target.lastRsi !== null && now - target.lastSignalTime > cooldownMs) {
+        if (botSession.enabled && botFlat && cooledDown && target.lastRsi !== null && target.lastRsi <= config.rsiOversold) {
+          console.log(`[AUTOPILOT] BUY trigger ${sym} RSI ${target.lastRsi.toFixed(2)} ≤ ${config.rsiOversold}`);
+          void botMaybeBuy(sym, closePrice, target.lastRsi).catch((err) => console.error("[AUTOPILOT BUY]", err.message));
+          target.lastSignalTime = now;
+        }
+
+        if (target.lastRsi !== null && cooledDown) {
           const baseAsset = sym.replace("USDT", "");
           const currentAssetBalance = availableBalances[baseAsset] || 0;
           const currentAssetUsdVal = currentAssetBalance * closePrice;
           const usdtBalance = availableBalances["USDT"] || 0;
 
-          if (target.lastRsi <= config.rsiOversold && isVolumeSurge && (botSession.enabled || usdtBalance >= config.tradeAmountUsdt)) {
-            if (botSession.enabled) {
-              void botMaybeBuy(sym, closePrice, target.lastRsi).catch((err) => console.error("[AUTOPILOT BUY]", err.message));
-            } else {
-              recordStrategyAlert({ symbol: sym, action: "BUY", signalType: "BUY", price: closePrice, rsi: target.lastRsi });
-              sendChannelTelegram(
-                "crypto",
-                `⚡ <b>BUY SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Available Cash:</b> $${usdtBalance.toFixed(2)} USDT`,
-              );
-            }
+          if (!botSession.enabled && target.lastRsi <= config.rsiOversold && isVolumeSurge && usdtBalance >= config.tradeAmountUsdt) {
+            recordStrategyAlert({ symbol: sym, action: "BUY", signalType: "BUY", price: closePrice, rsi: target.lastRsi });
+            sendChannelTelegram(
+              "crypto",
+              `⚡ <b>BUY SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Available Cash:</b> $${usdtBalance.toFixed(2)} USDT`,
+            );
             target.lastSignalTime = now;
           } else if (currentAssetUsdVal >= 5.0 && !botSession.positions[sym]) {
             const sellSignal = evaluateSellSignal(sym, closePrice, target.lastRsi);
