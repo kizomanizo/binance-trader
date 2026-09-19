@@ -487,18 +487,60 @@ const ALPACA_STOCK_WS_URL = "wss://stream.data.alpaca.markets/v2/iex";
 
 const SYMBOLS = (process.env.SYMBOLS || "btcusdt,ethusdt,solusdt,dogeusdt,xrpusdt").split(",").map((s) => s.trim().toLowerCase());
 const INTERVAL = "1m";
+const BOT_UNIVERSE_SIZE = 25;
+const BOT_SCAN_MS = 5 * 60 * 1000;
+const BOT_MIN_QUOTE_VOLUME = 3_000_000;
+const LEVERAGE_USDT_RE = /(UP|DOWN|BULL|BEAR)USDT$/;
+const STABLE_USDT_PAIRS = new Set(["USDTUSDT", "USDCUSDT", "BUSDUSDT", "TUSDUSDT", "FDUSDUSDT", "DAIUSDT", "USDPUSDT", "USDEUSDT", "USD1USDT"]);
 
 const marketData = {};
-SYMBOLS.forEach((sym) => {
-  marketData[sym.toUpperCase()] = {
+let binanceKlineWs = null;
+const subscribedKlines = new Set();
+const botHuntSymbols = new Set();
+
+function emptyMarketSlot(hunt = false) {
+  return {
     prices: [],
     volumes: [],
     lastRsi: null,
     lastVolumeSurge: false,
     lastSignalTime: 0,
     lastStopLossPnl: null,
+    hunt: Boolean(hunt),
   };
+}
+
+SYMBOLS.forEach((sym) => {
+  marketData[sym.toUpperCase()] = emptyMarketSlot(false);
 });
+
+function isDashboardSymbol(symbol) {
+  return SYMBOLS.includes(String(symbol || "").toLowerCase());
+}
+
+function ensureMarketSlot(symbol, hunt = false) {
+  const sym = String(symbol || "").toUpperCase();
+  if (!marketData[sym]) marketData[sym] = emptyMarketSlot(hunt);
+  else if (hunt) marketData[sym].hunt = true;
+  return marketData[sym];
+}
+
+function isTradableUsdtSpot(symbol) {
+  const sym = String(symbol || "").toUpperCase();
+  if (!sym.endsWith("USDT")) return false;
+  if (LEVERAGE_USDT_RE.test(sym) || STABLE_USDT_PAIRS.has(sym)) return false;
+  return Boolean(symbolLotSizes[sym]);
+}
+
+function subscribeKline(symbol) {
+  const stream = `${String(symbol).toLowerCase()}@kline_${INTERVAL}`;
+  if (subscribedKlines.has(stream)) return;
+  subscribedKlines.add(stream);
+  if (binanceKlineWs && binanceKlineWs.readyState === WebSocket.OPEN) {
+    binanceKlineWs.send(JSON.stringify({ method: "SUBSCRIBE", params: [stream], id: Date.now() }));
+    console.log(`[AUTOPILOT] subscribed ${String(symbol).toUpperCase()}`);
+  }
+}
 
 const STOCK_SYMBOLS = (process.env.STOCK_SYMBOLS || "AAPL,TSLA,NVDA,SPY")
   .split(",")
@@ -538,6 +580,8 @@ async function fetchExchangeInfo() {
     const data = await res.json();
     if (data.symbols) {
       data.symbols.forEach((s) => {
+        if (s.status && s.status !== "TRADING") return;
+        if (s.isSpotTradingAllowed === false) return;
         const lotFilter = s.filters.find((f) => f.filterType === "LOT_SIZE");
         const notionalFilter = s.filters.find((f) => f.filterType === "NOTIONAL" || f.filterType === "MIN_NOTIONAL");
         if (lotFilter) {
@@ -1119,6 +1163,7 @@ async function startBotSession({ budgetUsdt, alertProfitPercent, alertLossPercen
     botSession.lastAction = `Resumed · ${Object.keys(botSession.positions).join(", ")} still open`;
     persistBotSession();
     console.log(`[AUTOPILOT] RESUMED · ${Object.keys(botSession.positions).join(", ")}`);
+    void scanAutopilotUniverse().catch((err) => console.error("[AUTOPILOT] scan", err.message));
     sendTelegramAlert(
       `🤖 <b>AUTOPILOT RESUMED</b>\n\n` +
         `<b>Open:</b> ${Object.keys(botSession.positions).join(", ")}\n` +
@@ -1152,9 +1197,10 @@ async function startBotSession({ budgetUsdt, alertProfitPercent, alertLossPercen
       `<b>Budget:</b> $${budgetUsdt.toFixed(2)} USDT\n` +
       `<b>Clip size:</b> $${Number(config.tradeAmountUsdt).toFixed(2)} (strategy default)\n` +
       `<b>Alerts:</b> +${alertProfitPercent}% / −${alertLossPercent}% session P/L\n` +
-      `<b>Pairs:</b> <code>${SYMBOLS.map((s) => s.toUpperCase()).join(", ")}</code>\n` +
+      `<b>Pairs:</b> monitored + top ${BOT_UNIVERSE_SIZE} USDT by 24h volume\n` +
       `<b>Exits:</b> fee-aware TP ${config.takeProfitPercent}% / SL ${config.stopLossPercent}%`,
   );
+  void scanAutopilotUniverse().catch((err) => console.error("[AUTOPILOT] scan", err.message));
   return { success: true, resumed: false, status: getBotStatus() };
 }
 
@@ -1214,29 +1260,108 @@ async function convertDustToBnb(asset) {
   }
 }
 
+function applyKlineBootstrap(symbol, klines) {
+  const target = ensureMarketSlot(symbol);
+  const prices = klines.map((k) => parseFloat(k[4])).filter(Number.isFinite);
+  const volumes = klines.map((k) => parseFloat(k[5])).filter(Number.isFinite);
+  if (prices.length < 15) return target;
+  target.prices = prices.slice(-100);
+  target.volumes = volumes.slice(-100);
+  const rsiVals = RSI.calculate({ values: target.prices, period: 14 });
+  if (rsiVals.length > 0) target.lastRsi = rsiVals[rsiVals.length - 1];
+  if (target.volumes.length >= 20) {
+    const volSma = SMA.calculate({ values: target.volumes, period: 20 });
+    const avg = volSma[volSma.length - 1];
+    const lastVol = target.volumes[target.volumes.length - 1];
+    target.lastVolumeSurge = Boolean(avg && lastVol > avg * config.volumeSurgeMultiplier);
+  }
+  return target;
+}
+
+async function fetchKlines(symbol, limit = 50) {
+  const res = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${String(symbol).toUpperCase()}&interval=${INTERVAL}&limit=${limit}`);
+  const klines = await res.json();
+  return Array.isArray(klines) ? klines : [];
+}
+
 async function bootstrapHistoricalData() {
   console.log(`Bootstrapping historical candle data for: ${SYMBOLS.map((s) => s.toUpperCase()).join(", ")}...`);
   for (const symbol of SYMBOLS) {
-    const symUpper = symbol.toUpperCase();
     try {
-      const response = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${symUpper}&interval=${INTERVAL}&limit=50`);
-      const klines = await response.json();
-
-      if (Array.isArray(klines) && klines.length >= 15) {
-        const prices = klines.map((k) => parseFloat(k[4]));
-        const volumes = klines.map((k) => parseFloat(k[5]));
-
-        marketData[symUpper].prices = prices;
-        marketData[symUpper].volumes = volumes;
-
-        const rsiVals = RSI.calculate({ values: prices, period: 14 });
-        if (rsiVals.length > 0) {
-          marketData[symUpper].lastRsi = rsiVals[rsiVals.length - 1];
-        }
-      }
+      const klines = await fetchKlines(symbol);
+      if (klines.length >= 15) applyKlineBootstrap(symbol, klines);
     } catch (err) {
       console.error(`Failed to bootstrap ${symbol}:`, err.message);
     }
+  }
+}
+
+async function pickHottestUsdtSymbols(limit = BOT_UNIVERSE_SIZE) {
+  const res = await fetch("https://api.binance.com/api/v3/ticker/24hr");
+  const tickers = await res.json();
+  if (!Array.isArray(tickers)) {
+    console.warn("[AUTOPILOT] 24h ticker scan failed:", tickers?.msg || "unexpected payload");
+    return [];
+  }
+
+  return tickers
+    .filter((t) => isTradableUsdtSpot(t.symbol) && parseFloat(t.quoteVolume) >= BOT_MIN_QUOTE_VOLUME)
+    .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
+    .slice(0, limit)
+    .map((t) => ({
+      symbol: t.symbol,
+      quoteVolume: parseFloat(t.quoteVolume) || 0,
+      change: parseFloat(t.priceChangePercent) || 0,
+    }));
+}
+
+async function scanAutopilotUniverse() {
+  if (!botSession.enabled) return;
+  try {
+    const hottest = await pickHottestUsdtSymbols();
+    if (!hottest.length) {
+      console.warn("[AUTOPILOT] universe scan found no liquid USDT pairs");
+      return;
+    }
+
+    const scored = [];
+    for (let i = 0; i < hottest.length; i += 5) {
+      const batch = hottest.slice(i, i + 5);
+      const part = await Promise.all(
+        batch.map(async (row) => {
+          try {
+            const hunt = !isDashboardSymbol(row.symbol);
+            ensureMarketSlot(row.symbol, hunt);
+            if (hunt) botHuntSymbols.add(row.symbol);
+            const klines = await fetchKlines(row.symbol);
+            if (klines.length >= 15) applyKlineBootstrap(row.symbol, klines);
+            subscribeKline(row.symbol);
+            const rsi = marketData[row.symbol]?.lastRsi;
+            return { ...row, rsi: typeof rsi === "number" ? rsi : null };
+          } catch (err) {
+            console.warn(`[AUTOPILOT] scan ${row.symbol} failed:`, err.message);
+            return { ...row, rsi: null };
+          }
+        }),
+      );
+      scored.push(...part);
+    }
+
+    const ranked = scored.filter((row) => typeof row.rsi === "number").sort((a, b) => a.rsi - b.rsi);
+    const preview = ranked
+      .slice(0, 5)
+      .map((row) => `${row.symbol} ${row.rsi.toFixed(1)}`)
+      .join(", ");
+    console.log(`[AUTOPILOT] universe ${ranked.length} pairs · lowest RSI: ${preview || "n/a"}`);
+
+    const buy = ranked.find((row) => row.rsi <= config.rsiOversold);
+    if (buy && botOpenPositionCount() === 0) {
+      const price = marketData[buy.symbol]?.prices.slice(-1)[0] || 0;
+      console.log(`[AUTOPILOT] BUY trigger ${buy.symbol} RSI ${buy.rsi.toFixed(2)} ≤ ${config.rsiOversold} (universe scan)`);
+      await botMaybeBuy(buy.symbol, price, buy.rsi);
+    }
+  } catch (err) {
+    console.error("[AUTOPILOT] universe scan error:", err.message);
   }
 }
 
@@ -1383,9 +1508,22 @@ function connectMultiStreamWS() {
   const wsUrl = `wss://data-stream.binance.com/stream?streams=${streamNames}`;
 
   const ws = new WebSocket(wsUrl);
+  binanceKlineWs = ws;
 
   ws.on("open", () => {
+    SYMBOLS.forEach((s) => subscribedKlines.add(`${s}@kline_${INTERVAL}`));
     console.log(`Connected to Binance Multi-Stream for: ${SYMBOLS.map((s) => s.toUpperCase()).join(", ")}`);
+    botHuntSymbols.forEach((sym) => {
+      subscribedKlines.delete(`${String(sym).toLowerCase()}@kline_${INTERVAL}`);
+      subscribeKline(sym);
+    });
+    Object.keys(botSession.positions || {}).forEach((sym) => {
+      if (!isDashboardSymbol(sym)) {
+        botHuntSymbols.add(sym);
+        subscribedKlines.delete(`${String(sym).toLowerCase()}@kline_${INTERVAL}`);
+        subscribeKline(sym);
+      }
+    });
   });
 
   ws.on("message", (data) => {
@@ -1398,8 +1536,7 @@ function connectMultiStreamWS() {
         const closePrice = parseFloat(kline.c);
         const volume = parseFloat(kline.v);
 
-        const target = marketData[sym];
-        if (!target) return;
+        const target = ensureMarketSlot(sym);
 
         target.prices.push(closePrice);
         target.volumes.push(volume);
@@ -1429,7 +1566,11 @@ function connectMultiStreamWS() {
         const botFlat = botOpenPositionCount() === 0;
         const cooledDown = now - target.lastSignalTime > cooldownMs;
 
-        if (botSession.enabled && target.lastRsi !== null) {
+        if (
+          botSession.enabled &&
+          target.lastRsi !== null &&
+          (isDashboardSymbol(sym) || target.lastRsi <= config.rsiOversold + 8)
+        ) {
           console.log(
             `[AUTOPILOT] ${sym} RSI ${target.lastRsi.toFixed(2)} surge=${isVolumeSurge ? "yes" : "no"} cooldown=${cooledDown ? "ready" : "blocked"} pos=${botSession.positions[sym] ? "open" : "flat"}`,
           );
@@ -1852,7 +1993,8 @@ app.get("/api/stocks", (req, res) => {
 });
 
 app.get("/api/status", (req, res) => {
-  const marketsList = Object.keys(marketData).map((sym) => {
+  const marketsList = SYMBOLS.map((s) => s.toUpperCase()).map((sym) => {
+    if (!marketData[sym]) return null;
     const prices = marketData[sym].prices;
     const rsiVal = marketData[sym].lastRsi;
     const baseAsset = sym.replace("USDT", "");
@@ -1876,7 +2018,7 @@ app.get("/api/status", (req, res) => {
       netPnlPercent: netPnl !== null ? parseFloat(netPnl.toFixed(2)) : null,
       sellSignal: sellSignal?.type || null,
     };
-  });
+  }).filter(Boolean);
 
   res.json({
     interval: INTERVAL,
@@ -2033,12 +2175,20 @@ app.use(express.static("public"));
   setInterval(() => {
     if (botSession.enabled) maybeSessionPnlAlert();
   }, 30000);
+  setInterval(() => {
+    if (botSession.enabled) void scanAutopilotUniverse().catch((err) => console.error("[AUTOPILOT] scan", err.message));
+  }, BOT_SCAN_MS);
   await bootstrapHistoricalData();
   await bootstrapStockHistoricalData();
   connectMultiStreamWS();
   connectAlpacaStockWS();
   setInterval(refreshStockSnapshots, 60000);
   setInterval(refreshAlpacaClock, 60000);
+  if (botSession.enabled) {
+    setTimeout(() => {
+      void scanAutopilotUniverse().catch((err) => console.error("[AUTOPILOT] scan", err.message));
+    }, 4000);
+  }
 
   app.listen(PORT, async () => {
     console.log(`Terminal running on http://localhost:${PORT}`);
