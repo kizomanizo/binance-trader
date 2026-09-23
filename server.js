@@ -283,26 +283,44 @@ function getAssetUsdPrice(asset) {
   if (tick?.prices?.length) return tick.prices[tick.prices.length - 1];
   if (tickerPriceCache[`${upper}USDT`]?.price) return tickerPriceCache[`${upper}USDT`].price;
   if (tickerPriceCache[upper]?.price) return tickerPriceCache[upper].price;
-  const stock = stockMarketData[upper];
+  const stock = stockMarketData[upper] || stockMarketData[stockTickerFromAsset(upper)];
   if (Number.isFinite(stock?.lastPrice)) return stock.lastPrice;
   return null;
 }
 
+function compactAssetName(asset) {
+  return String(asset || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function stockAliases(ticker) {
+  const t = String(ticker || "").toUpperCase();
+  return [t, `${t}X`, `${t}B`, `B${t}`, `EQ${t}`, `1${t}`, `${t}USDT`, `${t}USD`, `${t}USDC`, `${t}XUSDT`];
+}
+
 function stockTickerFromAsset(asset) {
-  const a = String(asset || "").toUpperCase();
-  if (!a) return "";
-  if (STOCK_SYMBOLS.includes(a)) return a;
+  const raw = String(asset || "").toUpperCase();
+  const compact = compactAssetName(raw);
+  if (!compact) return "";
+  if (STOCK_SYMBOLS.includes(raw) || STOCK_SYMBOLS.includes(compact)) return STOCK_SYMBOLS.includes(raw) ? raw : compact;
   for (const ticker of STOCK_SYMBOLS) {
-    if (a === `${ticker}X` || a === `${ticker}B` || a === `B${ticker}`) return ticker;
+    if (stockAliases(ticker).includes(raw) || stockAliases(ticker).includes(compact)) return ticker;
   }
-  return a.replace(/[XB]$/, "");
+  const stripped = compact.replace(/^EQ/, "").replace(/^1(?=[A-Z])/, "").replace(/(USDT|USDC|USD)$/, "").replace(/[XB]$/, "");
+  if (STOCK_SYMBOLS.includes(stripped)) return stripped;
+  if (binanceStockAssets.has(raw) || binanceStockAssets.has(compact) || binanceStockAssets.has(stripped)) {
+    return stripped || compact;
+  }
+  return stripped || compact;
 }
 
 function isStockAsset(asset) {
   const a = String(asset || "").toUpperCase();
   if (!a) return false;
-  if (STOCK_SYMBOLS.includes(a) || binanceStockAssets.has(a)) return true;
-  return STOCK_SYMBOLS.some((s) => a === s || a === `${s}X` || a === `${s}B` || a === `B${s}`);
+  const compact = compactAssetName(a);
+  const ticker = stockTickerFromAsset(a);
+  if (STOCK_SYMBOLS.includes(ticker)) return true;
+  if (binanceStockAssets.has(a) || binanceStockAssets.has(compact) || binanceStockAssets.has(ticker)) return true;
+  return compact.startsWith("EQ") && Boolean(ticker);
 }
 
 const stockPositionCache = {};
@@ -1073,21 +1091,31 @@ async function fetchEquityQuote(symbol) {
   return Number.isFinite(alpacaPx) ? alpacaPx : null;
 }
 
+function getAlpacaStockPrice(asset) {
+  const ticker = stockTickerFromAsset(asset);
+  const px = ticker ? stockMarketData[ticker]?.lastPrice : null;
+  return Number.isFinite(px) && px > 0 ? px : null;
+}
+
 async function resolveUsdValue(asset, qty) {
   const amount = parseFloat(qty) || 0;
   if (!amount) return 0;
   const upper = String(asset || "").toUpperCase();
   if (upper === "USDT" || upper === "USD") return amount;
   if (isStockAsset(upper)) {
+    const alpacaPx = getAlpacaStockPrice(upper);
+    if (alpacaPx) return amount * alpacaPx;
     const equityPx = await fetchEquityQuote(upper);
     if (equityPx) return amount * equityPx;
   }
+  const ticker = stockTickerFromAsset(upper);
   const live =
     (await fetchTickerPrice(`${upper}USDT`)) ||
-    (await fetchTickerPrice(`${upper}XUSDT`)) ||
-    (await fetchTickerPrice(`${upper.replace(/[XB]$/, "")}USDT`));
+    (await fetchTickerPrice(`${ticker}USDT`)) ||
+    (await fetchTickerPrice(`${ticker}XUSDT`)) ||
+    (await fetchTickerPrice(`${upper}XUSDT`));
   if (live) return amount * live;
-  const cached = getAssetUsdPrice(upper);
+  const cached = getAssetUsdPrice(ticker) || getAssetUsdPrice(upper);
   return cached ? amount * cached : 0;
 }
 
@@ -1233,8 +1261,7 @@ async function loadBinanceStockUniverse() {
       });
     });
     STOCK_SYMBOLS.forEach((ticker) => {
-      binanceStockAssets.add(ticker);
-      binanceStockAssets.add(`${ticker}X`);
+      stockAliases(ticker).forEach((alias) => binanceStockAssets.add(alias));
     });
     if (binanceStockAssets.size) {
       console.log(`[BINANCE STOCKS] Tracking ${binanceStockAssets.size} tokenized equity assets.`);
@@ -1256,14 +1283,18 @@ async function collectWalletHoldings() {
 
   const addRow = (row) => {
     if (!row) return;
-    const key = `${row.venue}:${row.asset}`;
+    const asset = String(row.asset || "").toUpperCase();
+    const ticker = stockTickerFromAsset(asset);
+    const venue = isStockAsset(asset) ? "binance-stock" : row.venue;
+    const display = venue === "binance-stock" ? ticker || asset : asset;
+    const key = venue === "binance-stock" ? `binance-stock:${display}` : `${venue}:${asset}`;
     const prev = merged.get(key);
     if (prev) {
       prev.free = Math.max(prev.free, row.free);
       prev.locked = Math.max(prev.locked, row.locked);
       return;
     }
-    merged.set(key, { ...row });
+    merged.set(key, { ...row, asset: display, venue });
   };
 
   Object.keys(availableBalances).forEach((asset) => {
