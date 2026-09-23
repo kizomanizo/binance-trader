@@ -800,7 +800,11 @@ function collectSpotTradeSymbols() {
 
   const listed = [...symbols];
   if (!Object.keys(symbolLotSizes).length) return listed;
-  return listed.filter((sym) => Boolean(symbolLotSizes[sym]));
+  return listed.filter((sym) => {
+    if (symbolLotSizes[sym]) return true;
+    const base = String(sym).toUpperCase().replace(/USDT$|USDC$|USD$/, "");
+    return isStockAsset(base);
+  });
 }
 
 function knownTradeOrderIds() {
@@ -962,7 +966,7 @@ async function binanceSignedRequest(method, path, params = {}) {
 
   const timestamp = Date.now();
   const search = new URLSearchParams();
-  Object.entries({ ...params, timestamp }).forEach(([key, value]) => {
+  Object.entries({ ...params, timestamp, recvWindow: params.recvWindow || 60000 }).forEach(([key, value]) => {
     if (value === undefined || value === null || value === "") return;
     search.append(key, String(value));
   });
@@ -972,7 +976,11 @@ async function binanceSignedRequest(method, path, params = {}) {
     method,
     headers: { "X-MBX-APIKEY": apiKey },
   });
-  return response.json();
+  const data = await response.json();
+  if (data?.code && data.code !== 200 && !Array.isArray(data)) {
+    console.warn(`[BINANCE ${method} ${path}]`, data.code, data.msg || JSON.stringify(data));
+  }
+  return data;
 }
 
 async function fetchTickerPrice(symbol) {
@@ -1016,18 +1024,19 @@ async function fetchEquityQuote(symbol) {
 async function resolveUsdValue(asset, qty) {
   const amount = parseFloat(qty) || 0;
   if (!amount) return 0;
-  const direct = getAssetUsdPrice(asset);
-  if (direct) return amount * direct;
   const upper = String(asset || "").toUpperCase();
+  if (upper === "USDT" || upper === "USD") return amount;
   if (isStockAsset(upper)) {
     const equityPx = await fetchEquityQuote(upper);
     if (equityPx) return amount * equityPx;
   }
-  const price =
+  const live =
     (await fetchTickerPrice(`${upper}USDT`)) ||
-    (await fetchTickerPrice(`${upper.replace(/[XB]$/, "")}USDT`)) ||
-    (await fetchTickerPrice(upper));
-  return price ? amount * price : 0;
+    (await fetchTickerPrice(`${upper}XUSDT`)) ||
+    (await fetchTickerPrice(`${upper.replace(/[XB]$/, "")}USDT`));
+  if (live) return amount * live;
+  const cached = getAssetUsdPrice(upper);
+  return cached ? amount * cached : 0;
 }
 
 function normalizeEquityTrades(payload) {
@@ -1039,17 +1048,19 @@ function normalizeEquityTrades(payload) {
         ? payload.trades
         : Array.isArray(payload?.data)
           ? payload.data
-          : [];
+          : Array.isArray(payload?.rows)
+            ? payload.rows
+            : [];
   return rows
     .map((row) => {
-      const symbol = String(row.symbol || row.s || "").toUpperCase();
-      const orderId = row.orderId || row.order_id || row.id;
-      const qty = parseFloat(row.qty || row.executedQty || row.quantity || 0);
-      const price = parseFloat(row.price || row.avgPrice || 0);
-      const quote = parseFloat(row.quoteQty || row.quoteQuantity || qty * price || 0);
-      const sideRaw = String(row.side || "").toUpperCase();
+      const symbol = String(row.symbol || row.s || row.asset || "").toUpperCase();
+      const orderId = row.orderId || row.order_id || row.tradeId || row.id;
+      const qty = parseFloat(row.qty || row.executedQty || row.quantity || row.origQty || 0);
+      const price = parseFloat(row.price || row.avgPrice || row.executedPrice || 0);
+      const quote = parseFloat(row.quoteQty || row.quoteQuantity || row.executedQuoteQty || qty * price || 0);
+      const sideRaw = String(row.side || row.orderSide || "").toUpperCase();
       const side = sideRaw === "BUY" || sideRaw === "SELL" ? sideRaw : row.isBuyer === false ? "SELL" : "BUY";
-      const timestamp = parseInt(row.time || row.tradeTime || row.updateTime || Date.now(), 10);
+      const timestamp = parseInt(row.time || row.tradeTime || row.transactTime || row.updateTime || Date.now(), 10);
       if (!symbol || !orderId) return null;
       const base = symbol.replace(/USDT$|USD$|USDC$/, "");
       if (base) binanceStockAssets.add(base);
@@ -1083,11 +1094,15 @@ async function fetchBinanceEquityTrades() {
         endTime,
         size: 100,
       });
-      if (data?.code && !Array.isArray(data) && !data.list && !data.trades) {
+      if (data?.code && !Array.isArray(data) && !data.list && !data.trades && !data.rows) {
         if (i === 0) console.warn("[BINANCE EQUITY TRADES]", data.msg || JSON.stringify(data));
         break;
       }
-      trades.push(...normalizeEquityTrades(data));
+      const batch = normalizeEquityTrades(data);
+      if (i === 0 && !batch.length && data && !Array.isArray(data)) {
+        console.warn("[BINANCE EQUITY TRADES] Unexpected payload keys:", Object.keys(data).join(","));
+      }
+      trades.push(...batch);
     } catch (err) {
       console.warn("[BINANCE EQUITY TRADES]", err.message);
       break;
@@ -1097,49 +1112,80 @@ async function fetchBinanceEquityTrades() {
 }
 
 function mapBinanceAssetRow(row, venue) {
-  const asset = String(row.asset || row.tokenizedAsset || row.symbol || "").toUpperCase();
-  const free = parseFloat(row.free || row.available || row.qty || 0);
-  const locked = parseFloat(row.locked || row.freeze || row.freezeAmount || 0);
+  const asset = String(row.asset || row.coin || row.tokenizedAsset || row.symbol || "").toUpperCase();
+  const free = parseFloat(row.free ?? row.available ?? row.qty ?? 0) || 0;
+  const locked =
+    (parseFloat(row.locked) || 0) +
+    (parseFloat(row.freeze ?? row.freezeAmount) || 0) +
+    (parseFloat(row.withdrawing) || 0);
   if (!asset || free + locked <= 0.0001) return null;
   if (isStockAsset(asset)) binanceStockAssets.add(asset);
   return { asset, free, locked, venue: isStockAsset(asset) ? "binance-stock" : venue };
 }
 
-async function fetchBinanceFundingStocks() {
+function hasAssetAlias(merged, asset) {
+  const ticker = stockTickerFromAsset(asset);
+  const aliases = new Set([asset, ticker, `${ticker}X`, `${ticker}B`, `B${ticker}`].map((s) => String(s || "").toUpperCase()));
+  for (const row of merged.values()) {
+    if (aliases.has(row.asset) || aliases.has(stockTickerFromAsset(row.asset))) return true;
+  }
+  return false;
+}
+
+async function fetchSignedAssetRows(method, path, params, venue, label) {
   try {
-    const data = await binanceSignedRequest("POST", "/sapi/v1/asset/get-funding-asset", {});
-    const rows = Array.isArray(data) ? data : [];
-    return rows.map((row) => mapBinanceAssetRow(row, "binance-spot")).filter((row) => row && row.venue === "binance-stock");
+    const data = await binanceSignedRequest(method, path, params);
+    if (data?.code && !Array.isArray(data) && !data.list && !data.balances) return [];
+    const rows = Array.isArray(data) ? data : data?.list || data?.balances || [];
+    return rows.map((row) => mapBinanceAssetRow(row, venue)).filter(Boolean);
   } catch (err) {
-    console.warn("[BINANCE FUNDING STOCKS]", err.message);
+    console.warn(`[${label}]`, err.message);
     return [];
   }
 }
 
+async function fetchBinanceFundingStocks() {
+  return fetchSignedAssetRows("POST", "/sapi/v1/asset/get-funding-asset", {}, "binance-spot", "BINANCE FUNDING");
+}
+
 async function fetchBinanceUserAssets() {
-  try {
-    const data = await binanceSignedRequest("POST", "/sapi/v1/asset/getUserAsset", { needBtcValuation: "false" });
-    const rows = Array.isArray(data) ? data : [];
-    return rows.map((row) => mapBinanceAssetRow(row, "binance-spot")).filter(Boolean);
-  } catch (err) {
-    console.warn("[BINANCE USER ASSETS]", err.message);
-    return [];
+  return fetchSignedAssetRows("POST", "/sapi/v3/asset/getUserAsset", { needBtcValuation: "false" }, "binance-spot", "BINANCE USER ASSETS");
+}
+
+async function fetchBinanceCapitalBalances() {
+  return fetchSignedAssetRows("GET", "/sapi/v1/capital/config/getall", {}, "binance-spot", "BINANCE CAPITAL");
+}
+
+function inferHoldingsFromEquityTrades(trades) {
+  const qty = new Map();
+  for (const trade of trades || []) {
+    const base = String(trade.symbol || "").toUpperCase().replace(/USDT$|USDC$|USD$/, "");
+    if (!base) continue;
+    const signed = (trade.side === "SELL" ? -1 : 1) * (parseFloat(trade.qty) || 0);
+    qty.set(base, (qty.get(base) || 0) + signed);
+    binanceStockAssets.add(base);
   }
+  return [...qty.entries()]
+    .map(([asset, free]) => (free > 0.0001 ? { asset, free, locked: 0, venue: "binance-stock" } : null))
+    .filter(Boolean);
 }
 
 async function loadBinanceStockUniverse() {
   try {
-    const res = await fetch("https://api.binance.com/sapi/v1/equity/market/tokenized-assets");
-    const data = await res.json();
+    const data = await binanceSignedRequest("GET", "/sapi/v1/equity/market/tokenized-assets", {});
     const rows = Array.isArray(data) ? data : data?.list || data?.assets || data?.data || [];
     rows.forEach((row) => {
       ["asset", "tokenizedAsset", "symbol", "baseAsset"].forEach((key) => {
-        const value = String(row[key] || "").toUpperCase().replace(/USDT$|USD$/, "");
+        const value = String(row[key] || "").toUpperCase().replace(/USDT$|USD$|USDC$/, "");
         if (value) binanceStockAssets.add(value);
       });
     });
+    STOCK_SYMBOLS.forEach((ticker) => {
+      binanceStockAssets.add(ticker);
+      binanceStockAssets.add(`${ticker}X`);
+    });
     if (binanceStockAssets.size) {
-      console.log(`[BINANCE STOCKS] Loaded ${binanceStockAssets.size} tokenized equity assets.`);
+      console.log(`[BINANCE STOCKS] Tracking ${binanceStockAssets.size} tokenized equity assets.`);
     }
   } catch (err) {
     console.warn("[BINANCE STOCK UNIVERSE]", err.message);
@@ -1148,7 +1194,12 @@ async function loadBinanceStockUniverse() {
 
 async function buildHoldingsList() {
   await Promise.all([updateAccountBalances(), loadBinanceStockUniverse()]);
-  const [fundingStocks, userAssets] = await Promise.all([fetchBinanceFundingStocks(), fetchBinanceUserAssets()]);
+  const [fundingAssets, userAssets, capitalAssets, equityTrades] = await Promise.all([
+    fetchBinanceFundingStocks(),
+    fetchBinanceUserAssets(),
+    fetchBinanceCapitalBalances(),
+    fetchBinanceEquityTrades(),
+  ]);
   const merged = new Map();
 
   const addRow = (row) => {
@@ -1156,8 +1207,8 @@ async function buildHoldingsList() {
     const key = `${row.venue}:${row.asset}`;
     const prev = merged.get(key);
     if (prev) {
-      prev.free += row.free;
-      prev.locked += row.locked;
+      prev.free = Math.max(prev.free, row.free);
+      prev.locked = Math.max(prev.locked, row.locked);
       return;
     }
     merged.set(key, { ...row });
@@ -1172,7 +1223,11 @@ async function buildHoldingsList() {
     });
   });
   userAssets.forEach(addRow);
-  fundingStocks.forEach(addRow);
+  capitalAssets.forEach(addRow);
+  fundingAssets.forEach(addRow);
+  inferHoldingsFromEquityTrades(equityTrades).forEach((row) => {
+    if (!hasAssetAlias(merged, row.asset)) addRow(row);
+  });
 
   const rows = [];
   for (const row of merged.values()) {
@@ -1193,6 +1248,8 @@ async function buildHoldingsList() {
     if (a.venue !== b.venue) return a.venue === "binance-stock" ? -1 : 1;
     return a.asset.localeCompare(b.asset);
   });
+  const stockCount = rows.filter((row) => row.venue === "binance-stock").length;
+  console.log(`[HOLDINGS] ${rows.length} assets · ${stockCount} Binance stocks`);
   return rows;
 }
 
