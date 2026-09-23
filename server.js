@@ -49,6 +49,11 @@ let botConfig = {
 };
 
 let botSession = createIdleBotSession();
+let botBankroll = createIdleBotBankroll();
+
+function createIdleBotBankroll() {
+  return { seedUsdt: 0, cashUsdt: 0 };
+}
 
 function createIdleBotSession() {
   return {
@@ -155,9 +160,12 @@ function loadSettingsFromDb() {
         if (Number.isFinite(n)) botConfig[row.key] = n;
       } else if (row.key === "botSession") {
         restoreBotSession(row.value);
+      } else if (row.key === "botBankroll") {
+        restoreBotBankroll(row.value);
       }
     }
     stmt.free();
+    seedBankrollFromSession();
     console.log("Loaded strategy config from DB:", config);
     console.log("Loaded alert config from DB:", alertConfig);
     console.log("Loaded bot config from DB:", botConfig);
@@ -364,6 +372,7 @@ function restoreBotSession(raw) {
       positions: parsed.positions && typeof parsed.positions === "object" ? parsed.positions : {},
       busy: false,
     };
+    seedBankrollFromSession();
     if (botSession.enabled) {
       console.log(`[AUTOPILOT] Restored enabled session · cash $${Number(botSession.cashUsdt || 0).toFixed(2)}`);
     }
@@ -376,6 +385,43 @@ function restoreBotSession(raw) {
 function persistBotSession() {
   const { busy, ...rest } = botSession;
   saveSettingToDb("botSession", JSON.stringify(rest));
+}
+
+function restoreBotBankroll(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return;
+    botBankroll = {
+      seedUsdt: parseFloat(parsed.seedUsdt) || 0,
+      cashUsdt: parseFloat(parsed.cashUsdt) || 0,
+    };
+  } catch (err) {
+    console.warn("[AUTOPILOT] Failed to restore bankroll:", err.message);
+    botBankroll = createIdleBotBankroll();
+  }
+}
+
+function persistBotBankroll() {
+  saveSettingToDb("botBankroll", JSON.stringify(botBankroll));
+}
+
+function syncBotBankroll() {
+  const cash = parseFloat(botSession.cashUsdt) || 0;
+  if (!botBankroll.seedUsdt && botSession.startingEquity) {
+    botBankroll.seedUsdt = parseFloat(botSession.startingEquity) || cash;
+  }
+  if (cash || botOpenPositionCount() === 0) botBankroll.cashUsdt = cash;
+  persistBotBankroll();
+}
+
+function seedBankrollFromSession() {
+  if (botBankroll.seedUsdt || botBankroll.cashUsdt) return;
+  const cash = parseFloat(botSession.cashUsdt) || 0;
+  const seed = parseFloat(botSession.startingEquity) || 0;
+  if (cash < 5 && seed < 5) return;
+  botBankroll.seedUsdt = seed || cash;
+  botBankroll.cashUsdt = cash || seed;
+  persistBotBankroll();
 }
 
 function markToMarketBotPositions() {
@@ -419,11 +465,13 @@ function describeBotWatch() {
 
 function getBotStatus() {
   const mt = markToMarketBotPositions();
-  const cash = parseFloat(botSession.cashUsdt) || 0;
+  const cash = parseFloat(botSession.cashUsdt) || parseFloat(botBankroll.cashUsdt) || 0;
   const equity = cash + mt.value;
   const starting = parseFloat(botSession.startingEquity) || 0;
+  const seed = parseFloat(botBankroll.seedUsdt) || starting;
   const pnl = botSession.startedAt ? equity - starting : 0;
   const pnlPercent = starting > 0 ? (pnl / starting) * 100 : 0;
+  const lifetimePnl = seed > 0 ? equity - seed : pnl;
   let lastAction = botSession.lastAction || "Idle";
   if (botSession.enabled && mt.open.length === 0) {
     lastAction = describeBotWatch();
@@ -431,11 +479,12 @@ function getBotStatus() {
   return {
     enabled: Boolean(botSession.enabled),
     startedAt: botSession.startedAt,
-    budgetUsdt: parseFloat((botSession.budgetUsdt || 0).toFixed(2)),
+    budgetUsdt: parseFloat((botSession.budgetUsdt || cash || botConfig.defaultBudgetUsdt).toFixed(2)),
     cashUsdt: parseFloat(cash.toFixed(2)),
     equity: parseFloat(equity.toFixed(2)),
     pnl: parseFloat(pnl.toFixed(2)),
     pnlPercent: parseFloat(pnlPercent.toFixed(2)),
+    lifetimePnl: parseFloat(lifetimePnl.toFixed(2)),
     realizedPnl: parseFloat((botSession.realizedPnl || 0).toFixed(2)),
     lastAction,
     positions: mt.open,
@@ -444,6 +493,10 @@ function getBotStatus() {
     usdtWallet: parseFloat((availableBalances.USDT || 0).toFixed(2)),
     defaults: { ...botConfig },
     clipUsdt: config.tradeAmountUsdt,
+    bankroll: {
+      seedUsdt: parseFloat((seed || 0).toFixed(2)),
+      cashUsdt: parseFloat((parseFloat(botBankroll.cashUsdt) || cash).toFixed(2)),
+    },
   };
 }
 
@@ -1518,6 +1571,7 @@ async function botMaybeBuy(symbol, closePrice, rsi) {
     };
     botSession.lastAction = `BOUGHT ${result.symbol} $${result.executedUsdt.toFixed(2)}`;
     persistBotSession();
+    syncBotBankroll();
 
     const alertId = recordStrategyAlert({ symbol: result.symbol, action: "BUY", signalType: "BOT_BUY", price: closePrice, rsi });
     markAlertExecuted(alertId, result.orderId);
@@ -1558,6 +1612,7 @@ async function botMaybeSell(symbol, reason, rsi, { force = false } = {}) {
     delete botSession.positions[symbol];
     botSession.lastAction = `${reason || "SOLD"} ${symbol} $${proceeds.toFixed(2)} (${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)})`;
     persistBotSession();
+    syncBotBankroll();
 
     const alertId = recordStrategyAlert({
       symbol,
@@ -1620,28 +1675,44 @@ async function startBotSession({ budgetUsdt, alertProfitPercent, alertLossPercen
     return { success: true, resumed: true, status: getBotStatus() };
   }
 
-  if (wallet + 1e-8 < budgetUsdt) {
-    return { success: false, error: `Need $${budgetUsdt.toFixed(2)} USDT. Spot wallet has $${wallet.toFixed(2)}.` };
+  const parked = parseFloat(botBankroll.cashUsdt) || parseFloat(botSession.cashUsdt) || 0;
+  const carry = parked >= 5;
+  let allocation = budgetUsdt;
+  if (carry && budgetUsdt <= parked + 0.009) {
+    allocation = parseFloat(parked.toFixed(2));
+  } else if (carry && budgetUsdt > parked) {
+    botBankroll.seedUsdt = (parseFloat(botBankroll.seedUsdt) || parked) + (budgetUsdt - parked);
+    allocation = budgetUsdt;
   }
+
+  if (wallet + 1e-8 < allocation) {
+    return { success: false, error: `Need $${allocation.toFixed(2)} USDT. Spot wallet has $${wallet.toFixed(2)}.` };
+  }
+
+  if (!botBankroll.seedUsdt) botBankroll.seedUsdt = allocation;
+  botBankroll.cashUsdt = allocation;
+  persistBotBankroll();
 
   botSession = {
     ...createIdleBotSession(),
     enabled: true,
     startedAt: Date.now(),
-    budgetUsdt,
+    budgetUsdt: allocation,
     alertProfitPercent,
     alertLossPercent,
-    startingEquity: budgetUsdt,
-    cashUsdt: budgetUsdt,
-    lastAction: `Armed · $${budgetUsdt.toFixed(2)} USDT · watching RSI ≤ ${config.rsiOversold}`,
+    startingEquity: allocation,
+    cashUsdt: allocation,
+    lastAction: carry
+      ? `Armed · carrying $${allocation.toFixed(2)} USDT from prior Autopilot sessions · watching RSI ≤ ${config.rsiOversold}`
+      : `Armed · $${allocation.toFixed(2)} USDT · watching RSI ≤ ${config.rsiOversold}`,
   };
   persistBotSession();
   console.log(
-    `[AUTOPILOT] ON · budget $${budgetUsdt.toFixed(2)} · clip $${Number(config.tradeAmountUsdt).toFixed(2)} · buy when RSI ≤ ${config.rsiOversold} · TP ${config.takeProfitPercent}% / SL ${config.stopLossPercent}%`,
+    `[AUTOPILOT] ON · capital $${allocation.toFixed(2)}${carry ? " (carried)" : ""} · clip $${Number(config.tradeAmountUsdt).toFixed(2)} · buy when RSI ≤ ${config.rsiOversold} · TP ${config.takeProfitPercent}% / SL ${config.stopLossPercent}%`,
   );
   sendTelegramAlert(
     `🤖 <b>AUTOPILOT ON</b>\n\n` +
-      `<b>Budget:</b> $${budgetUsdt.toFixed(2)} USDT\n` +
+      `<b>Capital:</b> $${allocation.toFixed(2)} USDT${carry ? " (includes prior session P/L)" : ""}\n` +
       `<b>Clip size:</b> $${Number(config.tradeAmountUsdt).toFixed(2)} (strategy default)\n` +
       `<b>Alerts:</b> +${alertProfitPercent}% / −${alertLossPercent}% session P/L\n` +
       `<b>Pairs:</b> monitored + top ${BOT_UNIVERSE_SIZE} USDT by 24h volume\n` +
@@ -1663,10 +1734,15 @@ async function stopBotSession() {
   }
 
   const parked = parseFloat(botSession.cashUsdt) || 0;
-  const pnl = (parked) - (parseFloat(botSession.startingEquity) || 0);
+  const pnl = parked - (parseFloat(botSession.startingEquity) || 0);
+  const seed = parseFloat(botBankroll.seedUsdt) || parseFloat(botSession.startingEquity) || parked;
+  const lifetime = parked - seed;
+  botBankroll.cashUsdt = parked;
+  if (!botBankroll.seedUsdt) botBankroll.seedUsdt = seed;
+  persistBotBankroll();
   botSession.lastAction = errors.length
     ? `Stop incomplete · ${errors.join("; ")}`
-    : `Stopped · parked $${parked.toFixed(2)} USDT · session ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
+    : `Stopped · parked $${parked.toFixed(2)} USDT · session ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)} · lifetime ${lifetime >= 0 ? "+" : ""}$${lifetime.toFixed(2)}`;
   persistBotSession();
   botSession.busy = false;
 
@@ -1674,6 +1750,7 @@ async function stopBotSession() {
     `🤖 <b>AUTOPILOT OFF</b>\n\n` +
       `<b>Parked:</b> $${parked.toFixed(2)} USDT\n` +
       `<b>Session P/L:</b> ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}\n` +
+      `<b>Lifetime Autopilot:</b> ${lifetime >= 0 ? "+" : ""}$${lifetime.toFixed(2)}\n` +
       (errors.length ? `<b>Unsold:</b> ${errors.join("; ")}\n` : "") +
       `<b>Note:</b> Autopilot crypto was flattened. Other Spot holdings were left alone.`,
   );
