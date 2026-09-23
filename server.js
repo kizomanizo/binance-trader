@@ -553,6 +553,7 @@ const STABLE_USDT_PAIRS = new Set(["USDTUSDT", "USDCUSDT", "BUSDUSDT", "TUSDUSDT
 
 const marketData = {};
 let binanceKlineWs = null;
+let binanceWsReconnectTimer = null;
 const subscribedKlines = new Set();
 const botHuntSymbols = new Set();
 
@@ -590,14 +591,31 @@ function isTradableUsdtSpot(symbol) {
   return Boolean(symbolLotSizes[sym]);
 }
 
+function klineStreamName(symbol) {
+  return `${String(symbol).toLowerCase()}@kline_${INTERVAL}`;
+}
+
+function huntKlineStreams() {
+  const streams = new Set();
+  botHuntSymbols.forEach((sym) => {
+    if (!isDashboardSymbol(sym)) streams.add(klineStreamName(sym));
+  });
+  Object.keys(botSession.positions || {}).forEach((sym) => {
+    if (isDashboardSymbol(sym)) return;
+    botHuntSymbols.add(sym);
+    streams.add(klineStreamName(sym));
+  });
+  return [...streams];
+}
+
 function subscribeKline(symbol) {
-  const stream = `${String(symbol).toLowerCase()}@kline_${INTERVAL}`;
-  if (subscribedKlines.has(stream)) return;
+  const stream = klineStreamName(symbol);
+  const isNew = !subscribedKlines.has(stream);
   subscribedKlines.add(stream);
-  if (binanceKlineWs && binanceKlineWs.readyState === WebSocket.OPEN) {
-    binanceKlineWs.send(JSON.stringify({ method: "SUBSCRIBE", params: [stream], id: Date.now() }));
-    console.log(`[AUTOPILOT] subscribed ${String(symbol).toUpperCase()}`);
-  }
+  if (!isDashboardSymbol(symbol)) botHuntSymbols.add(String(symbol).toUpperCase());
+  if (!isNew || !binanceKlineWs || binanceKlineWs.readyState !== WebSocket.OPEN) return;
+  binanceKlineWs.send(JSON.stringify({ method: "SUBSCRIBE", params: [stream], id: Date.now() }));
+  console.log(`[AUTOPILOT] subscribed ${String(symbol).toUpperCase()}`);
 }
 
 const STOCK_SYMBOLS = (process.env.STOCK_SYMBOLS || "AAPL,TSLA,NVDA,SPY")
@@ -1902,26 +1920,39 @@ async function bootstrapStockHistoricalData() {
 }
 
 function connectMultiStreamWS() {
-  const streamNames = SYMBOLS.map((s) => `${s}@kline_${INTERVAL}`).join("/");
-  const wsUrl = `wss://data-stream.binance.com/stream?streams=${streamNames}`;
+  if (binanceWsReconnectTimer) {
+    clearTimeout(binanceWsReconnectTimer);
+    binanceWsReconnectTimer = null;
+  }
+  if (binanceKlineWs) {
+    try {
+      binanceKlineWs.removeAllListeners();
+      if (binanceKlineWs.readyState === WebSocket.OPEN || binanceKlineWs.readyState === WebSocket.CONNECTING) {
+        binanceKlineWs.close();
+      }
+    } catch {
+      // ignore stale socket cleanup
+    }
+    binanceKlineWs = null;
+  }
 
+  const streamNames = SYMBOLS.map((s) => klineStreamName(s)).join("/");
+  const wsUrl = `wss://data-stream.binance.com/stream?streams=${streamNames}`;
   const ws = new WebSocket(wsUrl);
   binanceKlineWs = ws;
 
   ws.on("open", () => {
-    SYMBOLS.forEach((s) => subscribedKlines.add(`${s}@kline_${INTERVAL}`));
-    console.log(`Connected to Binance Multi-Stream for: ${SYMBOLS.map((s) => s.toUpperCase()).join(", ")}`);
-    botHuntSymbols.forEach((sym) => {
-      subscribedKlines.delete(`${String(sym).toLowerCase()}@kline_${INTERVAL}`);
-      subscribeKline(sym);
-    });
-    Object.keys(botSession.positions || {}).forEach((sym) => {
-      if (!isDashboardSymbol(sym)) {
-        botHuntSymbols.add(sym);
-        subscribedKlines.delete(`${String(sym).toLowerCase()}@kline_${INTERVAL}`);
-        subscribeKline(sym);
-      }
-    });
+    if (binanceKlineWs !== ws) return;
+    SYMBOLS.forEach((s) => subscribedKlines.add(klineStreamName(s)));
+    const extra = huntKlineStreams();
+    extra.forEach((stream) => subscribedKlines.add(stream));
+    if (extra.length) {
+      ws.send(JSON.stringify({ method: "SUBSCRIBE", params: extra, id: Date.now() }));
+    }
+    console.log(
+      `Connected to Binance Multi-Stream for: ${SYMBOLS.map((s) => s.toUpperCase()).join(", ")}` +
+        (extra.length ? ` + ${extra.length} hunt pairs` : ""),
+    );
   });
 
   ws.on("message", (data) => {
@@ -2044,7 +2075,15 @@ function connectMultiStreamWS() {
   });
 
   ws.on("error", (err) => console.error("WebSocket Error:", err.message));
-  ws.on("close", () => setTimeout(connectMultiStreamWS, 3000));
+  ws.on("close", () => {
+    if (binanceKlineWs !== ws) return;
+    binanceKlineWs = null;
+    if (binanceWsReconnectTimer) return;
+    binanceWsReconnectTimer = setTimeout(() => {
+      binanceWsReconnectTimer = null;
+      connectMultiStreamWS();
+    }, 3000);
+  });
 }
 
 function scheduleAlpacaReconnect() {
