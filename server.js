@@ -19,6 +19,8 @@ const availableBalances = { USDT: 0 };
 const lockedBalances = {};
 const symbolLotSizes = {}; // Stores stepSize precision for each symbol
 const tickerPriceCache = {};
+const equityQuoteShapeWarned = new Set();
+let loggedLiveStockQuotes = false;
 const binanceStockAssets = new Set();
 
 // Default Strategy Config (fallback if database is empty)
@@ -1132,6 +1134,20 @@ async function fetchTickerPrice(symbol) {
   return null;
 }
 
+function parseEquityQuotePrice(data) {
+  if (!data || typeof data !== "object") return null;
+  const row = Array.isArray(data) ? data[0] : data.data && typeof data.data === "object" && !Array.isArray(data.data) ? data.data : data;
+  if (!row || typeof row !== "object" || (row.code && row.code !== 200 && !Array.isArray(row))) return null;
+  const last = parseFloat(row.price ?? row.lastPrice ?? row.last ?? row.markPrice ?? row.close ?? row.c);
+  if (Number.isFinite(last) && last > 0) return last;
+  const bid = parseFloat(row.bidPrice ?? row.bid ?? row.b);
+  const ask = parseFloat(row.askPrice ?? row.ask ?? row.a);
+  if (Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > 0) return (bid + ask) / 2;
+  if (Number.isFinite(bid) && bid > 0) return bid;
+  if (Number.isFinite(ask) && ask > 0) return ask;
+  return null;
+}
+
 async function fetchEquityQuote(symbol, { maxAgeMs = 30000 } = {}) {
   const ticker = stockTickerFromAsset(symbol);
   if (!ticker) return null;
@@ -1139,16 +1155,21 @@ async function fetchEquityQuote(symbol, { maxAgeMs = 30000 } = {}) {
   if (cached && Date.now() - cached.at < maxAgeMs) return cached.price;
   try {
     const data = await binanceSignedRequest("GET", "/sapi/v1/equity/market/quote", { symbol: ticker });
-    const price = parseFloat(data?.price || data?.lastPrice || data?.data?.price || data?.[0]?.price);
+    const price = parseEquityQuotePrice(data);
     if (Number.isFinite(price)) {
       tickerPriceCache[`EQ_${ticker}`] = { price, at: Date.now() };
       return price;
     }
+    if (data && !data.code && !equityQuoteShapeWarned.has(ticker)) {
+      equityQuoteShapeWarned.add(ticker);
+      const keys = Array.isArray(data) ? `array:${data.length}` : Object.keys(data).join(",");
+      console.warn(`[BINANCE EQUITY QUOTE ${ticker}] Unrecognized payload: ${keys}`);
+    }
   } catch (err) {
     console.warn(`[BINANCE EQUITY QUOTE ${ticker}]`, err.message);
   }
-  const alpacaPx = stockMarketData[ticker]?.lastPrice;
-  return Number.isFinite(alpacaPx) ? alpacaPx : null;
+  const live = stockMarketData[ticker]?.lastPrice;
+  return Number.isFinite(live) ? live : null;
 }
 
 function getAlpacaStockPrice(asset) {
@@ -2160,21 +2181,14 @@ function normalizeKlineBars(payload) {
 }
 
 async function fetchStockKlines(ticker) {
-  try {
-    const data = await binanceSignedRequest("GET", "/sapi/v1/equity/market/klines", { symbol: ticker, interval: "1m", limit: 50 });
-    const bars = normalizeKlineBars(data);
-    if (bars.length) return bars;
-  } catch (err) {
-    console.warn(`[BINANCE STOCK KLINES ${ticker}]`, err.message);
-  }
-  for (const pair of [`${ticker}XUSDT`, `${ticker}USDT`]) {
+  for (const pair of [`${ticker}USDT`, `${ticker}USDC`, `${ticker}XUSDT`]) {
     try {
       const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${pair}&interval=1m&limit=50`);
       const data = await res.json();
       const bars = normalizeKlineBars(data);
       if (bars.length) return bars;
     } catch {
-      // try next pair
+      // tokenized equities are not on the public spot kline API
     }
   }
   return [];
@@ -2195,8 +2209,8 @@ async function bootstrapBinanceStocks() {
       const px = await fetchEquityQuote(symbol, { maxAgeMs: 0 });
       if (Number.isFinite(px)) {
         stockMarketData[symbol].lastPrice = px;
-        stockMarketData[symbol].prices = [px];
-        console.log(`[BINANCE STOCKS] ${symbol} last $${px}`);
+        if (!stockMarketData[symbol].prices.length) stockMarketData[symbol].prices = [px];
+        console.log(`[BINANCE STOCKS] ${symbol} last $${px.toFixed(2)}`);
       } else {
         console.warn(`[BINANCE STOCKS] No quote yet for ${symbol}`);
       }
@@ -2205,9 +2219,17 @@ async function bootstrapBinanceStocks() {
 }
 
 async function pollBinanceStockQuotes() {
+  const priced = [];
   for (const symbol of STOCK_SYMBOLS) {
     const px = await fetchEquityQuote(symbol, { maxAgeMs: 8000 });
-    if (Number.isFinite(px)) ingestStockQuote(symbol, px);
+    if (Number.isFinite(px)) {
+      ingestStockQuote(symbol, px);
+      priced.push(`${symbol} $${px.toFixed(2)}`);
+    }
+  }
+  if (priced.length && !loggedLiveStockQuotes) {
+    loggedLiveStockQuotes = true;
+    console.log(`[BINANCE STOCKS] Live quotes ${priced.join(" · ")}`);
   }
 }
 
