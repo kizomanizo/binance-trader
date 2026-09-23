@@ -228,10 +228,22 @@ function markAlertExecuted(alertId, orderId) {
   saveDatabase();
 }
 
+function tradeLookupSymbols(symbol) {
+  const upper = String(symbol || "").toUpperCase();
+  const base = upper.replace(/USDT$|USDC$|USD$/, "");
+  const ticker = stockTickerFromAsset(base);
+  if (STOCK_SYMBOLS.includes(ticker) || isStockAsset(ticker) || isStockAsset(upper) || isStockAsset(base)) {
+    return [...new Set([ticker, `${ticker}USDT`, `${ticker}USD`, `${ticker}USDC`, `${ticker}X`, `${ticker}XUSDT`, `${ticker}B`, `${ticker}BUSDT`, `B${ticker}`, upper, base].filter(Boolean))];
+  }
+  return [upper];
+}
+
 function getAverageEntryPrice(symbol) {
   try {
-    const stmt = db.prepare("SELECT side, qty, usdt_amount FROM trades WHERE UPPER(symbol) = ? ORDER BY timestamp ASC");
-    stmt.bind([symbol.toUpperCase()]);
+    const symbols = tradeLookupSymbols(symbol);
+    const placeholders = symbols.map(() => "?").join(",");
+    const stmt = db.prepare(`SELECT side, qty, usdt_amount FROM trades WHERE UPPER(symbol) IN (${placeholders}) ORDER BY timestamp ASC`);
+    stmt.bind(symbols);
 
     let totalQty = 0;
     let totalCost = 0;
@@ -291,6 +303,27 @@ function isStockAsset(asset) {
   if (!a) return false;
   if (STOCK_SYMBOLS.includes(a) || binanceStockAssets.has(a)) return true;
   return STOCK_SYMBOLS.some((s) => a === s || a === `${s}X` || a === `${s}B` || a === `B${s}`);
+}
+
+const stockPositionCache = {};
+
+function rememberStockPositions(rows) {
+  const next = {};
+  for (const row of rows || []) {
+    const asset = String(row.asset || "").toUpperCase();
+    if (!asset || (row.venue !== "binance-stock" && !isStockAsset(asset))) continue;
+    const ticker = stockTickerFromAsset(asset);
+    if (!ticker) continue;
+    const qty = parseFloat(row.total != null ? row.total : (Number(row.free) || 0) + (Number(row.locked) || 0));
+    if (!(qty > 0.0001)) continue;
+    next[ticker] = { asset, qty: (next[ticker]?.qty || 0) + qty, at: Date.now() };
+  }
+  Object.keys(stockPositionCache).forEach((key) => delete stockPositionCache[key]);
+  Object.assign(stockPositionCache, next);
+}
+
+function getHeldStockQty(ticker) {
+  return stockPositionCache[String(ticker || "").toUpperCase()]?.qty || 0;
 }
 
 function getNetPnlPercent(avgEntryPrice, closePrice) {
@@ -583,6 +616,7 @@ STOCK_SYMBOLS.forEach((symbol) => {
     lastVolumeSurge: false,
     lastSignalTime: 0,
     lastSignal: null,
+    lastStopLossPnl: null,
     sawLiveBar: false,
   };
 });
@@ -1192,7 +1226,7 @@ async function loadBinanceStockUniverse() {
   }
 }
 
-async function buildHoldingsList() {
+async function collectWalletHoldings() {
   await Promise.all([updateAccountBalances(), loadBinanceStockUniverse()]);
   const [fundingAssets, userAssets, capitalAssets, equityTrades] = await Promise.all([
     fetchBinanceFundingStocks(),
@@ -1228,9 +1262,26 @@ async function buildHoldingsList() {
   inferHoldingsFromEquityTrades(equityTrades).forEach((row) => {
     if (!hasAssetAlias(merged, row.asset)) addRow(row);
   });
+  return [...merged.values()];
+}
+
+async function refreshStockPositionCache() {
+  try {
+    const assets = await collectWalletHoldings();
+    rememberStockPositions(assets);
+    const tickers = Object.keys(stockPositionCache);
+    console.log(`[STOCKS] Sell watch ${tickers.length ? tickers.join(", ") : "none held"}`);
+  } catch (err) {
+    console.warn("[STOCK POSITIONS]", err.message);
+  }
+}
+
+async function buildHoldingsList() {
+  const assets = await collectWalletHoldings();
+  rememberStockPositions(assets);
 
   const rows = [];
-  for (const row of merged.values()) {
+  for (const row of assets) {
     const total = row.free + row.locked;
     if (total <= 0.0001) continue;
     const usdValue = await resolveUsdValue(row.asset, total);
@@ -2058,25 +2109,77 @@ function processAlpacaBar(msg) {
   const cooldownMs = config.cooldownMinutes * 60 * 1000;
   if (now - target.lastSignalTime <= cooldownMs) return;
 
-  if (rsi <= config.rsiOversold && isVolumeSurge) {
+  const heldQty = getHeldStockQty(symbol);
+  const heldUsd = heldQty * closePrice;
+  if (!(heldUsd >= 5)) {
+    if (rsi <= config.rsiOversold && isVolumeSurge) {
+      target.lastSignalTime = now;
+      target.lastSignal = "BUY";
+      recordStrategyAlert({ symbol, action: "BUY", signalType: "STOCK_BUY", price: closePrice, rsi, source: "stocks" });
+      sendChannelTelegram(
+        "stocks",
+        `📈 <b>STOCK BUY (${symbol})</b>\n\n` +
+          `<b>RSI:</b> ${rsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` +
+          `<b>Action:</b> You do not hold this on Binance — consider an entry.`,
+      );
+    }
+    return;
+  }
+
+  const sellSignal = evaluateSellSignal(symbol, closePrice, rsi);
+  if (!sellSignal) {
+    if (target.lastStopLossPnl !== null) {
+      const netPnl = getNetPnlPercent(getAverageEntryPrice(symbol), closePrice);
+      if (netPnl === null || netPnl > -(config.stopLossPercent || 2.0)) target.lastStopLossPnl = null;
+    }
+    return;
+  }
+
+  if (sellSignal.type === "TAKE_PROFIT") {
     target.lastSignalTime = now;
-    target.lastSignal = "BUY";
-    recordStrategyAlert({ symbol, action: "BUY", signalType: "STOCK_BUY", price: closePrice, rsi, source: "stocks" });
+    target.lastSignal = "SELL";
+    target.lastStopLossPnl = null;
+    recordStrategyAlert({ symbol, action: "SELL", signalType: "STOCK_TAKE_PROFIT", price: closePrice, rsi, source: "stocks" });
     sendChannelTelegram(
       "stocks",
-      `📈 <b>STOCK BUY SIGNAL (${symbol})</b>\n\n` +
-        `<b>RSI:</b> ${rsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` +
-        `<b>Source:</b> Alpaca Market Data`,
+      `🎯 <b>STOCK TAKE PROFIT (${symbol})</b>\n\n` +
+        `<b>Price:</b> $${closePrice} (Fee-adjusted entry: $${sellSignal.avgEntryPrice.toFixed(4)})\n` +
+        `<b>Net PnL after fees:</b> +${sellSignal.netPnl.toFixed(2)}%\n` +
+        `<b>Holding:</b> ${heldQty.toFixed(4)} · $${heldUsd.toFixed(2)}\n` +
+        `<b>RSI:</b> ${rsi.toFixed(2)}`,
     );
-  } else if (rsi >= config.rsiOverbought) {
+    return;
+  }
+
+  if (sellSignal.type === "STOP_LOSS") {
+    const lastPnl = target.lastStopLossPnl;
+    const isDeeperDip = lastPnl !== null && sellSignal.netPnl <= lastPnl - 1.0;
+    if (lastPnl !== null && !isDeeperDip) return;
     target.lastSignalTime = now;
-    target.lastSignal = "OVERBOUGHT";
-    recordStrategyAlert({ symbol, action: "OVERBOUGHT", signalType: "STOCK_OVERBOUGHT", price: closePrice, rsi, source: "stocks" });
+    target.lastSignal = "SELL";
+    target.lastStopLossPnl = sellSignal.netPnl;
+    recordStrategyAlert({ symbol, action: "SELL", signalType: "STOCK_STOP_LOSS", price: closePrice, rsi, source: "stocks" });
     sendChannelTelegram(
       "stocks",
-      `📊 <b>STOCK OVERBOUGHT ALERT (${symbol})</b>\n\n` +
-        `<b>RSI:</b> ${rsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` +
-        `<b>Action:</b> Consider evaluating profit targets.`,
+      `🛑 <b>STOCK STOP LOSS (${symbol})</b>\n\n` +
+        `<b>Price:</b> $${closePrice} (Fee-adjusted entry: $${sellSignal.avgEntryPrice.toFixed(4)})\n` +
+        `<b>Net PnL after fees:</b> ${sellSignal.netPnl.toFixed(2)}%\n` +
+        `<b>Holding:</b> ${heldQty.toFixed(4)} · $${heldUsd.toFixed(2)}\n` +
+        `<b>Action:</b> Consider selling on Binance to protect capital.`,
+    );
+    return;
+  }
+
+  if (sellSignal.type === "SELL") {
+    target.lastSignalTime = now;
+    target.lastSignal = "SELL";
+    recordStrategyAlert({ symbol, action: "SELL", signalType: "STOCK_SELL", price: closePrice, rsi, source: "stocks" });
+    sendChannelTelegram(
+      "stocks",
+      `📉 <b>STOCK SELL (${symbol})</b>\n\n` +
+        `<b>RSI:</b> ${rsi.toFixed(2)} (overbought) | <b>Price:</b> $${closePrice}\n` +
+        `<b>Holding:</b> ${heldQty.toFixed(4)} · $${heldUsd.toFixed(2)}\n` +
+        `<b>Action:</b> You hold this on Binance — consider taking profit.`,
     );
   }
 }
@@ -2501,7 +2604,11 @@ app.use(express.static("public"));
   await fetchExchangeInfo();
   await loadBinanceStockUniverse();
   await updateAccountBalances();
+  await refreshStockPositionCache();
   setInterval(updateAccountBalances, 15000);
+  setInterval(() => {
+    void refreshStockPositionCache().catch((err) => console.warn("[STOCK POSITIONS]", err.message));
+  }, 60000);
   setInterval(() => {
     if (botSession.enabled) maybeSessionPnlAlert();
   }, 30000);

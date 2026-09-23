@@ -896,7 +896,7 @@
         <div style="font-weight: 700; margin-bottom: 1rem">⚡ Recent Strategy Alerts</div>
         <div id="logs-list">
           <div class="empty-logs" style="color: var(--text-muted); font-size: 0.85rem; font-style: italic">
-            Listening for triggers... Alerts will show BUY signals when USDT ≥ $<span id="empty-buy-threshold">5.50</span> and SELL signals when holding position ≥ $5.00.
+            Listening for triggers... Crypto BUY when USDT ≥ $<span id="empty-buy-threshold">5.50</span>. SELL when you hold ≥ $5. Stocks: BUY when you do not hold, SELL when you do.
           </div>
         </div>
         <div class="logs-pager" id="logs-pager" style="display: none">
@@ -1044,7 +1044,7 @@
     <div class="modal-overlay" id="alertSettingsModal">
       <div class="modal">
         <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-yellow); margin-bottom: 0.5rem">🔔 Alert Settings</div>
-        <p class="alert-note">Toggles and allowed hours control Telegram only. In-app strategy alerts stay on. Leave hours empty for 24/7 when a channel is on.</p>
+        <p class="alert-note">Toggles and allowed hours control Telegram only. In-app strategy alerts stay on. Leave hours empty for 24/7 when a channel is on. Stock Telegram: BUY when you do not hold that name, SELL (TP/SL) when you do. No overbought spam on stocks you do not own.</p>
 
         <div class="alert-section">
           <div class="toggle-row">
@@ -1546,6 +1546,9 @@
       function alertHeadline(alert) {
         if (alert.signalType === "STOCK_BUY" || (alert.source === "stocks" && alert.action === "BUY")) return "📈 STOCK BUY";
         if (alert.signalType === "STOCK_OVERBOUGHT" || alert.action === "OVERBOUGHT") return "📊 STOCK OVERBOUGHT";
+        if (alert.signalType === "STOCK_TAKE_PROFIT") return "🎯 STOCK TAKE PROFIT";
+        if (alert.signalType === "STOCK_STOP_LOSS") return "🛑 STOCK STOP LOSS";
+        if (alert.signalType === "STOCK_SELL") return "📉 STOCK SELL";
         if (alert.signalType === "BOT_BUY") return "🤖 AUTOPILOT BUY";
         if (alert.signalType === "BOT_TAKE_PROFIT") return "🤖 AUTOPILOT TP";
         if (alert.signalType === "BOT_STOP_LOSS") return "🤖 AUTOPILOT SL";
@@ -1719,7 +1722,7 @@
         if (pageAlerts.length === 0) {
           logsList.innerHTML = `
           <div class="empty-logs" style="color:var(--text-muted); font-size:0.85rem; font-style:italic;">
-            Listening for triggers... Alerts will show BUY signals when USDT ≥ $${formatTradeAmount()} and SELL signals when holding position ≥ $5.00.
+            Listening for triggers... Crypto BUY when USDT ≥ $${formatTradeAmount()}. SELL when you hold ≥ $5. Stocks: BUY when you do not hold, SELL when you do.
           </div>
         `;
           pager.style.display = "none";
