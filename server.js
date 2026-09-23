@@ -610,12 +610,6 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const TRADE_PASSWORD = process.env.TRADE_PASSWORD || "admin123";
 
-const ALPACA_API_KEY = process.env.ALPACA_API_KEY;
-const ALPACA_SECRET_KEY = process.env.ALPACA_SECRET_KEY;
-const ALPACA_BASE_URL = process.env.ALPACA_BASE_URL || "https://paper-api.alpaca.markets/v2";
-const ALPACA_DATA_URL = process.env.ALPACA_DATA_URL || "https://data.alpaca.markets/v2";
-const ALPACA_STOCK_WS_URL = "wss://stream.data.alpaca.markets/v2/iex";
-
 const SYMBOLS = (process.env.SYMBOLS || "btcusdt,ethusdt,solusdt,dogeusdt,xrpusdt").split(",").map((s) => s.trim().toLowerCase());
 const INTERVAL = "1m";
 const BOT_UNIVERSE_SIZE = 25;
@@ -717,17 +711,6 @@ STOCK_SYMBOLS.forEach((symbol) => {
 function isBinanceStockTradeSymbol(symbol) {
   const ticker = stockTickerFromAsset(symbol);
   return STOCK_SYMBOLS.includes(ticker) || isStockAsset(symbol) || isStockAsset(ticker);
-}
-
-let alpacaStockWs = null;
-let alpacaReconnectTimer = null;
-let alpacaClock = { is_open: null, next_open: null, next_close: null };
-
-function alpacaAuthHeaders() {
-  return {
-    "APCA-API-KEY-ID": ALPACA_API_KEY,
-    "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
-  };
 }
 
 // Fetch LOT_SIZE rules to format trade quantities precisely for Binance
@@ -1172,7 +1155,7 @@ async function fetchEquityQuote(symbol, { maxAgeMs = 30000 } = {}) {
   return Number.isFinite(live) ? live : null;
 }
 
-function getAlpacaStockPrice(asset) {
+function getStockPrice(asset) {
   const ticker = stockTickerFromAsset(asset);
   const px = ticker ? stockMarketData[ticker]?.lastPrice : null;
   return Number.isFinite(px) && px > 0 ? px : null;
@@ -1184,8 +1167,8 @@ async function resolveUsdValue(asset, qty) {
   const upper = String(asset || "").toUpperCase();
   if (upper === "USDT" || upper === "USD") return amount;
   if (isStockAsset(upper)) {
-    const alpacaPx = getAlpacaStockPrice(upper);
-    if (alpacaPx) return amount * alpacaPx;
+    const stockPx = getStockPrice(upper);
+    if (stockPx) return amount * stockPx;
     const equityPx = await fetchEquityQuote(upper);
     if (equityPx) return amount * equityPx;
   }
@@ -1470,7 +1453,7 @@ async function placeEquityMarketOrder({ ticker, side, usdtAmount, quantity, sell
 
     const executedQty = parseFloat(result.executedQty || result.quantity || result.qty || params.quantity || 0);
     const executedPrice =
-      parseFloat(result.avgPrice || result.price || result.executedPrice) || getAlpacaStockPrice(ticker) || 0;
+      parseFloat(result.avgPrice || result.price || result.executedPrice) || getStockPrice(ticker) || 0;
     const executedUsdt = parseFloat(result.cummulativeQuoteQty || result.notional || result.quoteQty || executedQty * executedPrice || tradeAmount || 0);
     const timestamp = Date.now();
 
@@ -2233,113 +2216,6 @@ async function pollBinanceStockQuotes() {
   }
 }
 
-function applyStockSnapshot(symbol, snapshot) {
-  const target = stockMarketData[symbol];
-  if (!target || !snapshot || typeof snapshot !== "object") return false;
-
-  const lastTrade = parseFloat(snapshot.latestTrade?.p);
-  const minuteClose = parseFloat(snapshot.minuteBar?.c);
-  const dailyClose = parseFloat(snapshot.dailyBar?.c);
-  const prevClose = parseFloat(snapshot.prevDailyBar?.c);
-  const price = [lastTrade, minuteClose, dailyClose, prevClose].find(Number.isFinite);
-  if (!Number.isFinite(price)) return false;
-
-  target.lastPrice = price;
-  if (target.prices.length === 0) target.prices = [price];
-  return true;
-}
-
-async function refreshAlpacaClock() {
-  if (!ALPACA_API_KEY || !ALPACA_SECRET_KEY) return;
-  try {
-    const res = await fetch(`${ALPACA_BASE_URL}/clock`, { headers: alpacaAuthHeaders() });
-    const data = await res.json();
-    if (!res.ok) {
-      console.error("[ALPACA CLOCK]", data.message || data);
-      return;
-    }
-    alpacaClock = {
-      is_open: Boolean(data.is_open),
-      next_open: data.next_open || null,
-      next_close: data.next_close || null,
-    };
-  } catch (err) {
-    console.error("[ALPACA CLOCK]", err.message);
-  }
-}
-
-async function refreshStockSnapshots() {
-  if (!ALPACA_API_KEY || !ALPACA_SECRET_KEY || STOCK_SYMBOLS.length === 0) return;
-
-  try {
-    const symbols = encodeURIComponent(STOCK_SYMBOLS.join(","));
-    const res = await fetch(`${ALPACA_DATA_URL}/stocks/snapshots?symbols=${symbols}&feed=iex`, {
-      headers: alpacaAuthHeaders(),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      console.error("[ALPACA SNAPSHOTS]", data.message || JSON.stringify(data));
-      return;
-    }
-
-    const snapshots = data.snapshots && typeof data.snapshots === "object" ? data.snapshots : data;
-    STOCK_SYMBOLS.forEach((symbol) => applyStockSnapshot(symbol, snapshots[symbol]));
-  } catch (err) {
-    console.error("[ALPACA SNAPSHOTS]", err.message);
-  }
-}
-
-async function bootstrapStockHistoricalData() {
-  if (!ALPACA_API_KEY || !ALPACA_SECRET_KEY) {
-    console.warn("[ALPACA] Missing ALPACA_API_KEY or ALPACA_SECRET_KEY — stock bootstrap skipped.");
-    return;
-  }
-  if (STOCK_SYMBOLS.length === 0) return;
-
-  console.log(`Bootstrapping Alpaca IEX stock data for: ${STOCK_SYMBOLS.join(", ")}...`);
-  await refreshAlpacaClock();
-
-  const start = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
-  await Promise.all(
-    STOCK_SYMBOLS.map(async (symbol) => {
-      try {
-        const barsUrl =
-          `${ALPACA_DATA_URL}/stocks/bars?symbols=${encodeURIComponent(symbol)}` +
-          `&timeframe=1Min&limit=50&adjustment=raw&feed=iex&sort=desc&start=${encodeURIComponent(start)}`;
-        const res = await fetch(barsUrl, { headers: alpacaAuthHeaders() });
-        const data = await res.json();
-        if (!res.ok) {
-          console.error(`[ALPACA BARS ${symbol}]`, data.message || JSON.stringify(data));
-          return;
-        }
-        const rawBars = data.bars?.[symbol];
-        const bars = Array.isArray(rawBars) ? rawBars.slice().reverse() : [];
-        const count = applyStockBars(symbol, bars);
-        if (count > 0) {
-          console.log(`[ALPACA] Seeded ${symbol} with ${count} 1m bars, last $${stockMarketData[symbol].lastPrice}`);
-        }
-      } catch (err) {
-        console.error(`[ALPACA BARS ${symbol}]`, err.message);
-      }
-    }),
-  );
-
-  await refreshStockSnapshots();
-
-  STOCK_SYMBOLS.forEach((symbol) => {
-    const target = stockMarketData[symbol];
-    if (!Number.isFinite(target.lastPrice)) {
-      console.warn(`[ALPACA] No seed price for ${symbol} — UI will show -- until a live bar or snapshot arrives.`);
-    }
-  });
-
-  if (alpacaClock.is_open === false) {
-    console.log(
-      `[ALPACA] US market is closed. Showing last IEX prices until next open${alpacaClock.next_open ? ` (${alpacaClock.next_open})` : ""}.`,
-    );
-  }
-}
-
 function connectMultiStreamWS() {
   if (binanceWsReconnectTimer) {
     clearTimeout(binanceWsReconnectTimer);
@@ -2504,237 +2380,6 @@ function connectMultiStreamWS() {
       binanceWsReconnectTimer = null;
       connectMultiStreamWS();
     }, 3000);
-  });
-}
-
-function scheduleAlpacaReconnect() {
-  if (alpacaReconnectTimer) return;
-  alpacaReconnectTimer = setTimeout(() => {
-    alpacaReconnectTimer = null;
-    connectAlpacaStockWS();
-  }, 5000);
-}
-
-function processAlpacaTrade(msg) {
-  const symbol = msg.S;
-  const price = parseFloat(msg.p);
-  const target = stockMarketData[symbol];
-  if (!target || !Number.isFinite(price)) return;
-  target.lastPrice = price;
-}
-
-function processAlpacaBar(msg) {
-  const symbol = msg.S;
-  const closePrice = parseFloat(msg.c);
-  const volume = parseFloat(msg.v);
-  const target = stockMarketData[symbol];
-  if (!target || !Number.isFinite(closePrice)) return;
-  if (msg.t && target.lastBarTime === msg.t) return;
-
-  if (!target.sawLiveBar) {
-    target.sawLiveBar = true;
-    console.log(`[ALPACA] first live bar ${symbol} $${closePrice}`);
-  }
-
-  target.prices.push(closePrice);
-  if (Number.isFinite(volume)) target.volumes.push(volume);
-  target.lastPrice = closePrice;
-  if (msg.t) target.lastBarTime = msg.t;
-
-  if (target.prices.length > 100) target.prices.shift();
-  if (target.volumes.length > 100) target.volumes.shift();
-
-  let rsi = null;
-  if (target.prices.length >= 15) {
-    const rsiValues = RSI.calculate({ values: target.prices, period: 14 });
-    if (rsiValues && rsiValues.length > 0) {
-      rsi = rsiValues[rsiValues.length - 1];
-      target.lastRsi = rsi;
-    }
-  }
-
-  let isVolumeSurge = false;
-  if (target.volumes.length >= 20) {
-    const volSmaValues = SMA.calculate({ values: target.volumes, period: 20 });
-    if (volSmaValues && volSmaValues.length > 0) {
-      const avgVolume = volSmaValues[volSmaValues.length - 1];
-      isVolumeSurge = volume > avgVolume * config.volumeSurgeMultiplier;
-    }
-  }
-  target.lastVolumeSurge = isVolumeSurge;
-
-  if (rsi === null) return;
-
-  const now = Date.now();
-  const cooldownMs = config.cooldownMinutes * 60 * 1000;
-  if (now - target.lastSignalTime <= cooldownMs) return;
-
-  const heldQty = getHeldStockQty(symbol);
-  const heldUsd = heldQty * closePrice;
-  if (!(heldUsd >= 5)) {
-    if (rsi <= config.rsiOversold && isVolumeSurge) {
-      target.lastSignalTime = now;
-      target.lastSignal = "BUY";
-      recordStrategyAlert({ symbol, action: "BUY", signalType: "STOCK_BUY", price: closePrice, rsi, source: "stocks" });
-      sendChannelTelegram(
-        "stocks",
-        `📈 <b>STOCK BUY (${symbol})</b>\n\n` +
-          `<b>RSI:</b> ${rsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` +
-          `<b>Action:</b> You do not hold this on Binance — consider an entry.`,
-      );
-    }
-    return;
-  }
-
-  const sellSignal = evaluateSellSignal(symbol, closePrice, rsi);
-  if (!sellSignal) {
-    if (target.lastStopLossPnl !== null) {
-      const netPnl = getNetPnlPercent(getAverageEntryPrice(symbol), closePrice);
-      if (netPnl === null || netPnl > -(config.stopLossPercent || 2.0)) target.lastStopLossPnl = null;
-    }
-    return;
-  }
-
-  if (sellSignal.type === "TAKE_PROFIT") {
-    target.lastSignalTime = now;
-    target.lastSignal = "SELL";
-    target.lastStopLossPnl = null;
-    recordStrategyAlert({ symbol, action: "SELL", signalType: "STOCK_TAKE_PROFIT", price: closePrice, rsi, source: "stocks" });
-    sendChannelTelegram(
-      "stocks",
-      `🎯 <b>STOCK TAKE PROFIT (${symbol})</b>\n\n` +
-        `<b>Price:</b> $${closePrice} (Fee-adjusted entry: $${sellSignal.avgEntryPrice.toFixed(4)})\n` +
-        `<b>Net PnL after fees:</b> +${sellSignal.netPnl.toFixed(2)}%\n` +
-        `<b>Holding:</b> ${heldQty.toFixed(4)} · $${heldUsd.toFixed(2)}\n` +
-        `<b>RSI:</b> ${rsi.toFixed(2)}`,
-    );
-    return;
-  }
-
-  if (sellSignal.type === "STOP_LOSS") {
-    const lastPnl = target.lastStopLossPnl;
-    const isDeeperDip = lastPnl !== null && sellSignal.netPnl <= lastPnl - 1.0;
-    if (lastPnl !== null && !isDeeperDip) return;
-    target.lastSignalTime = now;
-    target.lastSignal = "SELL";
-    target.lastStopLossPnl = sellSignal.netPnl;
-    recordStrategyAlert({ symbol, action: "SELL", signalType: "STOCK_STOP_LOSS", price: closePrice, rsi, source: "stocks" });
-    sendChannelTelegram(
-      "stocks",
-      `🛑 <b>STOCK STOP LOSS (${symbol})</b>\n\n` +
-        `<b>Price:</b> $${closePrice} (Fee-adjusted entry: $${sellSignal.avgEntryPrice.toFixed(4)})\n` +
-        `<b>Net PnL after fees:</b> ${sellSignal.netPnl.toFixed(2)}%\n` +
-        `<b>Holding:</b> ${heldQty.toFixed(4)} · $${heldUsd.toFixed(2)}\n` +
-        `<b>Action:</b> Consider selling on Binance to protect capital.`,
-    );
-    return;
-  }
-
-  if (sellSignal.type === "SELL") {
-    target.lastSignalTime = now;
-    target.lastSignal = "SELL";
-    recordStrategyAlert({ symbol, action: "SELL", signalType: "STOCK_SELL", price: closePrice, rsi, source: "stocks" });
-    sendChannelTelegram(
-      "stocks",
-      `📉 <b>STOCK SELL (${symbol})</b>\n\n` +
-        `<b>RSI:</b> ${rsi.toFixed(2)} (overbought) | <b>Price:</b> $${closePrice}\n` +
-        `<b>Holding:</b> ${heldQty.toFixed(4)} · $${heldUsd.toFixed(2)}\n` +
-        `<b>Action:</b> You hold this on Binance — consider taking profit.`,
-    );
-  }
-}
-
-function handleAlpacaMessage(msg, ws) {
-  if (!msg || typeof msg !== "object") return;
-
-  if (msg.T === "success" && msg.msg === "authenticated") {
-    ws.send(JSON.stringify({ action: "subscribe", bars: STOCK_SYMBOLS, trades: STOCK_SYMBOLS }));
-    console.log(`Alpaca IEX subscribed to 1m bars + trades: ${STOCK_SYMBOLS.join(", ")}`);
-    return;
-  }
-
-  if (msg.T === "success") {
-    console.log(`[ALPACA] ${msg.msg || "success"}`);
-    return;
-  }
-
-  if (msg.T === "subscription") {
-    console.log("[ALPACA] Subscription confirmed:", {
-      bars: msg.bars || [],
-      trades: msg.trades || [],
-    });
-    return;
-  }
-
-  if (msg.T === "error") {
-    console.error(`[ALPACA ERROR] ${msg.code || ""} ${msg.msg || JSON.stringify(msg)}`);
-    return;
-  }
-
-  if (msg.T === "t") {
-    processAlpacaTrade(msg);
-    return;
-  }
-
-  if (msg.T === "b") {
-    processAlpacaBar(msg);
-  }
-}
-
-function connectAlpacaStockWS() {
-  if (!ALPACA_API_KEY || !ALPACA_SECRET_KEY) {
-    console.warn("[ALPACA] Missing ALPACA_API_KEY or ALPACA_SECRET_KEY — stock stream disabled.");
-    return;
-  }
-
-  if (alpacaReconnectTimer) {
-    clearTimeout(alpacaReconnectTimer);
-    alpacaReconnectTimer = null;
-  }
-
-  if (alpacaStockWs) {
-    try {
-      alpacaStockWs.removeAllListeners();
-      alpacaStockWs.close();
-    } catch {
-      // ignore stale socket cleanup errors
-    }
-    alpacaStockWs = null;
-  }
-
-  const ws = new WebSocket(ALPACA_STOCK_WS_URL);
-  alpacaStockWs = ws;
-
-  ws.on("open", () => {
-    console.log(`Connected to Alpaca IEX stream (${ALPACA_BASE_URL})`);
-    ws.send(
-      JSON.stringify({
-        action: "auth",
-        key: ALPACA_API_KEY,
-        secret: ALPACA_SECRET_KEY,
-      }),
-    );
-  });
-
-  ws.on("message", (data) => {
-    try {
-      const parsed = JSON.parse(data);
-      const messages = Array.isArray(parsed) ? parsed : [parsed];
-      messages.forEach((msg) => handleAlpacaMessage(msg, ws));
-    } catch (err) {
-      console.error("Alpaca WS processing error:", err.message);
-    }
-  });
-
-  ws.on("error", (err) => {
-    console.error("Alpaca WebSocket Error:", err.message);
-    scheduleAlpacaReconnect();
-  });
-
-  ws.on("close", () => {
-    console.warn("Alpaca WebSocket closed. Reconnecting in 5s...");
-    if (alpacaStockWs === ws) alpacaStockWs = null;
-    scheduleAlpacaReconnect();
   });
 }
 
