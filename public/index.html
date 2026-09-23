@@ -887,7 +887,7 @@
       </div>
       <div class="grid" id="market-grid"></div>
 
-      <div class="stock-strip" id="stock-strip" title="Alpaca IEX · in-app notices + Telegram">
+      <div class="stock-strip" id="stock-strip" title="Binance stocks · quotes + in-app BUY/SELL">
         <span class="stock-strip-label" id="stocks-status">Stocks</span>
         <div class="stock-strip-items" id="stock-grid"></div>
       </div>
@@ -911,7 +911,7 @@
           <span>💾 Trade Outcome Ledger</span>
           <button class="time-btn" id="refresh-outcomes-btn" onclick="fetchTradeOutcomes(true)">🔄 Refresh</button>
         </div>
-        <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem">In-app attempts plus Binance Spot and Binance stock fills. Alpaca is only used for live stock prices.</div>
+        <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem">In-app attempts plus Binance Spot and Binance stock fills. Stock quotes and orders use Binance.</div>
         <table class="outcome-table">
           <thead>
             <tr>
@@ -1748,13 +1748,11 @@
           item.id = `alert-card-${alert.id}`;
           item.className = `log-item ${alert.action === "BUY" ? "buy-alert" : "sell-alert"} ${isExecuted ? "executed" : ""}`;
 
-          const actionHtml = isStock
-            ? `<span class="alert-notice">In-app notice</span>`
-            : isExecuted
-              ? `<button class="btn-executed" disabled>✓ EXECUTED${alert.orderId ? ` (#${alert.orderId})` : ""}</button>`
-              : alert.action === "BUY"
-                ? `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'BUY', null, '${alert.id}')" class="btn-buy" style="padding:0.4rem 0.8rem;">BUY $${formatTradeAmount()}</button>`
-                : `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'SELL', null, '${alert.id}', true)" class="btn-sell" style="padding:0.4rem 0.8rem;">SELL NOW</button>`;
+          const actionHtml = isExecuted
+            ? `<button class="btn-executed" disabled>✓ EXECUTED${alert.orderId ? ` (#${alert.orderId})` : ""}</button>`
+            : alert.action === "BUY"
+              ? `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'BUY', null, '${alert.id}')" class="btn-buy" style="padding:0.4rem 0.8rem;">BUY $${formatTradeAmount()}</button>`
+              : `<button id="btn-${alert.id}" onclick="executeInAppTrade('${alert.symbol}', 'SELL', null, '${alert.id}', true)" class="btn-sell" style="padding:0.4rem 0.8rem;">SELL NOW</button>`;
 
           item.innerHTML = `
           <div>
@@ -2172,10 +2170,15 @@
         const confirmTitle = `Execute ${side} Order`;
 
         const defaultBuyAmount = amount ?? tradeAmountUsdt;
+        const isStock = !/USDT$/.test(String(symbol || "").toUpperCase());
         const confirmMessage =
           isSell || sellAll
-            ? `Execute MARKET SELL for ${symbol.toUpperCase()}? Leave quantity empty to clear the full free balance (leftover dust is converted to BNB).`
-            : `Execute a MARKET BUY for ${symbol.toUpperCase()}? Default size is $${formatTradeAmount(defaultBuyAmount)} USDT — change it below for this trade only.`;
+            ? isStock
+              ? `Execute a Binance stock MARKET SELL for ${symbol.toUpperCase()}? This sells the full holding unless you set a quantity.`
+              : `Execute MARKET SELL for ${symbol.toUpperCase()}? Leave quantity empty to clear the full free balance (leftover dust is converted to BNB).`
+            : isStock
+              ? `Execute a Binance stock MARKET BUY for ${symbol.toUpperCase()}? Default size is $${formatTradeAmount(defaultBuyAmount)} USDT.`
+              : `Execute a MARKET BUY for ${symbol.toUpperCase()}? Default size is $${formatTradeAmount(defaultBuyAmount)} USDT — change it below for this trade only.`;
 
         const confirmation = await showConfirmationWithPassword(confirmTitle, confirmMessage, isSell || sellAll ? { type: "sell" } : { type: "buy", defaultAmount: defaultBuyAmount });
         if (!confirmation?.password) return;
@@ -2315,16 +2318,13 @@
 
           if (!data.connected) {
             statusEl.textContent = "Stocks · offline";
-          } else if (data.marketOpen === false) {
-            statusEl.textContent = "Stocks · closed";
           } else {
-            statusEl.textContent = "Stocks";
+            statusEl.textContent = data.source === "binance" ? "Stocks · Binance" : "Stocks";
           }
 
           const strip = document.getElementById("stock-strip");
           if (strip) {
-            const nextOpen = data.nextOpen ? ` · next open ${new Date(data.nextOpen).toLocaleString()}` : "";
-            strip.title = data.marketOpen === false ? `Alpaca IEX · last session prices${nextOpen}` : "Alpaca IEX · in-app notices + Telegram";
+            strip.title = "Binance stocks · quotes + in-app BUY/SELL";
           }
 
           data.stocks.forEach((s) => {

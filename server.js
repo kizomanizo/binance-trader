@@ -707,8 +707,15 @@ STOCK_SYMBOLS.forEach((symbol) => {
     lastSignal: null,
     lastStopLossPnl: null,
     sawLiveBar: false,
+    pendingClose: null,
+    pendingVolume: null,
   };
 });
+
+function isBinanceStockTradeSymbol(symbol) {
+  const ticker = stockTickerFromAsset(symbol);
+  return STOCK_SYMBOLS.includes(ticker) || isStockAsset(symbol) || isStockAsset(ticker);
+}
 
 let alpacaStockWs = null;
 let alpacaReconnectTimer = null;
@@ -1125,11 +1132,11 @@ async function fetchTickerPrice(symbol) {
   return null;
 }
 
-async function fetchEquityQuote(symbol) {
+async function fetchEquityQuote(symbol, { maxAgeMs = 30000 } = {}) {
   const ticker = stockTickerFromAsset(symbol);
   if (!ticker) return null;
   const cached = tickerPriceCache[`EQ_${ticker}`];
-  if (cached && Date.now() - cached.at < 30000) return cached.price;
+  if (cached && Date.now() - cached.at < maxAgeMs) return cached.price;
   try {
     const data = await binanceSignedRequest("GET", "/sapi/v1/equity/market/quote", { symbol: ticker });
     const price = parseFloat(data?.price || data?.lastPrice || data?.data?.price || data?.[0]?.price);
@@ -1417,12 +1424,91 @@ async function syncAllTradeHistory() {
   };
 }
 
+async function placeEquityMarketOrder({ ticker, side, usdtAmount, quantity, sellAll = false, alertId = null, source = "manual" }) {
+  const sideUpper = String(side || "").toUpperCase();
+  const isSell = sideUpper === "SELL";
+  const tradeAmount = usdtAmount || config.tradeAmountUsdt;
+  const params = { symbol: ticker, side: sideUpper, orderType: "MARKET" };
+
+  try {
+    if (isSell) {
+      await refreshStockPositionCache();
+      const held = getHeldStockQty(ticker);
+      const rawQty = sellAll || !quantity ? held : Math.min(parseFloat(quantity) || 0, held);
+      if (rawQty <= 0.0000001) return { success: false, error: `No Binance ${ticker} holding to sell.` };
+      params.quantity = String(rawQty);
+    } else {
+      params.notional = String(tradeAmount);
+    }
+
+    const result = await binanceSignedRequest("POST", "/sapi/v1/equity/order/place", params);
+    const orderId = result?.orderId || result?.order_id || result?.id;
+    if (!orderId || (result?.code && result.code !== 200)) {
+      return { success: false, error: result?.msg || "Binance stock order rejected", details: result };
+    }
+
+    const executedQty = parseFloat(result.executedQty || result.quantity || result.qty || params.quantity || 0);
+    const executedPrice =
+      parseFloat(result.avgPrice || result.price || result.executedPrice) || getAlpacaStockPrice(ticker) || 0;
+    const executedUsdt = parseFloat(result.cummulativeQuoteQty || result.notional || result.quoteQty || executedQty * executedPrice || tradeAmount || 0);
+    const timestamp = Date.now();
+
+    db.run(`INSERT INTO trades (symbol, side, price, qty, usdt_amount, order_id, timestamp, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
+      ticker,
+      sideUpper,
+      executedPrice,
+      executedQty,
+      executedUsdt,
+      String(orderId),
+      timestamp,
+      source === "bot" ? "bot" : "binance-stock",
+    ]);
+    saveDatabase();
+    markAlertExecuted(alertId, orderId);
+    await refreshStockPositionCache();
+
+    if (source !== "bot") {
+      sendTelegramAlert(
+        `✅ <b>BINANCE STOCK ${sideUpper}</b>\n\n` +
+          `<b>Symbol:</b> ${ticker}\n` +
+          `<b>Amount:</b> $${Number(executedUsdt).toFixed(2)} (${executedQty} ${ticker})\n` +
+          `<b>Price:</b> $${executedPrice}\n` +
+          `<b>Order ID:</b> <code>${orderId}</code>`,
+      );
+    }
+
+    return {
+      success: true,
+      orderId,
+      symbol: ticker,
+      side: sideUpper,
+      executedPrice,
+      executedQty,
+      executedUsdt,
+      details: result,
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
 async function placeMarketOrder({ symbol, side, usdtAmount, quantity, sellAll = false, alertId = null, source = "manual" }) {
   const apiKey = process.env.BINANCE_API_KEY;
   const secretKey = process.env.BINANCE_SECRET_KEY;
   if (!apiKey || !secretKey) return { success: false, error: "Missing API keys." };
 
   const symUpper = String(symbol || "").toUpperCase();
+  if (isBinanceStockTradeSymbol(symUpper)) {
+    return placeEquityMarketOrder({
+      ticker: stockTickerFromAsset(symUpper),
+      side,
+      usdtAmount,
+      quantity,
+      sellAll,
+      alertId,
+      source,
+    });
+  }
   const sideUpper = String(side || "").toUpperCase();
   const baseAsset = symUpper.replace("USDT", "");
   const isSell = sideUpper === "SELL";
@@ -1918,6 +2004,211 @@ function applyStockBars(symbol, bars) {
     }
   }
   return prices.length;
+}
+
+function evaluateStockSignals(symbol, closePrice, volume) {
+  const target = stockMarketData[symbol];
+  if (!target || !Number.isFinite(closePrice)) return;
+
+  let rsi = target.lastRsi;
+  if (target.prices.length >= 15) {
+    const rsiValues = RSI.calculate({ values: target.prices, period: 14 });
+    if (rsiValues && rsiValues.length > 0) {
+      rsi = rsiValues[rsiValues.length - 1];
+      target.lastRsi = rsi;
+    }
+  }
+  if (rsi === null || rsi === undefined) return;
+
+  let isVolumeSurge = false;
+  if (Number.isFinite(volume) && target.volumes.length >= 20) {
+    const volSmaValues = SMA.calculate({ values: target.volumes, period: 20 });
+    if (volSmaValues && volSmaValues.length > 0) {
+      const avgVolume = volSmaValues[volSmaValues.length - 1];
+      isVolumeSurge = volume > avgVolume * config.volumeSurgeMultiplier;
+    }
+  }
+  target.lastVolumeSurge = isVolumeSurge;
+
+  const now = Date.now();
+  const cooldownMs = config.cooldownMinutes * 60 * 1000;
+  if (now - target.lastSignalTime <= cooldownMs) return;
+
+  const heldQty = getHeldStockQty(symbol);
+  const heldUsd = heldQty * closePrice;
+  const haveVolume = Number.isFinite(volume) && target.volumes.length >= 20;
+  if (!(heldUsd >= 5)) {
+    if (rsi <= config.rsiOversold && (!haveVolume || isVolumeSurge)) {
+      target.lastSignalTime = now;
+      target.lastSignal = "BUY";
+      recordStrategyAlert({ symbol, action: "BUY", signalType: "STOCK_BUY", price: closePrice, rsi, source: "stocks" });
+      sendChannelTelegram(
+        "stocks",
+        `📈 <b>STOCK BUY (${symbol})</b>\n\n` +
+          `<b>RSI:</b> ${rsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` +
+          `<b>Action:</b> You do not hold this on Binance — BUY on the terminal.`,
+      );
+    }
+    return;
+  }
+
+  const sellSignal = evaluateSellSignal(symbol, closePrice, rsi);
+  if (!sellSignal) {
+    if (target.lastStopLossPnl !== null) {
+      const netPnl = getNetPnlPercent(getAverageEntryPrice(symbol), closePrice);
+      if (netPnl === null || netPnl > -(config.stopLossPercent || 2.0)) target.lastStopLossPnl = null;
+    }
+    return;
+  }
+
+  if (sellSignal.type === "TAKE_PROFIT") {
+    target.lastSignalTime = now;
+    target.lastSignal = "SELL";
+    target.lastStopLossPnl = null;
+    recordStrategyAlert({ symbol, action: "SELL", signalType: "STOCK_TAKE_PROFIT", price: closePrice, rsi, source: "stocks" });
+    sendChannelTelegram(
+      "stocks",
+      `🎯 <b>STOCK TAKE PROFIT (${symbol})</b>\n\n` +
+        `<b>Price:</b> $${closePrice} (Fee-adjusted entry: $${sellSignal.avgEntryPrice.toFixed(4)})\n` +
+        `<b>Net PnL after fees:</b> +${sellSignal.netPnl.toFixed(2)}%\n` +
+        `<b>Holding:</b> ${heldQty.toFixed(4)} · $${heldUsd.toFixed(2)}\n` +
+        `<b>RSI:</b> ${rsi.toFixed(2)}\n` +
+        `<b>Action:</b> SELL on the terminal to flatten on Binance.`,
+    );
+    return;
+  }
+
+  if (sellSignal.type === "STOP_LOSS") {
+    const lastPnl = target.lastStopLossPnl;
+    const isDeeperDip = lastPnl !== null && sellSignal.netPnl <= lastPnl - 1.0;
+    if (lastPnl !== null && !isDeeperDip) return;
+    target.lastSignalTime = now;
+    target.lastSignal = "SELL";
+    target.lastStopLossPnl = sellSignal.netPnl;
+    recordStrategyAlert({ symbol, action: "SELL", signalType: "STOCK_STOP_LOSS", price: closePrice, rsi, source: "stocks" });
+    sendChannelTelegram(
+      "stocks",
+      `🛑 <b>STOCK STOP LOSS (${symbol})</b>\n\n` +
+        `<b>Price:</b> $${closePrice} (Fee-adjusted entry: $${sellSignal.avgEntryPrice.toFixed(4)})\n` +
+        `<b>Net PnL after fees:</b> ${sellSignal.netPnl.toFixed(2)}%\n` +
+        `<b>Holding:</b> ${heldQty.toFixed(4)} · $${heldUsd.toFixed(2)}\n` +
+        `<b>Action:</b> SELL on the terminal to protect capital.`,
+    );
+    return;
+  }
+
+  if (sellSignal.type === "SELL") {
+    target.lastSignalTime = now;
+    target.lastSignal = "SELL";
+    recordStrategyAlert({ symbol, action: "SELL", signalType: "STOCK_SELL", price: closePrice, rsi, source: "stocks" });
+    sendChannelTelegram(
+      "stocks",
+      `📉 <b>STOCK SELL (${symbol})</b>\n\n` +
+        `<b>RSI:</b> ${rsi.toFixed(2)} (overbought) | <b>Price:</b> $${closePrice}\n` +
+        `<b>Holding:</b> ${heldQty.toFixed(4)} · $${heldUsd.toFixed(2)}\n` +
+        `<b>Action:</b> You hold this on Binance — SELL on the terminal.`,
+    );
+  }
+}
+
+function closeStockBar(symbol, closePrice, volume) {
+  const target = stockMarketData[symbol];
+  if (!target || !Number.isFinite(closePrice)) return;
+  if (!target.sawLiveBar) {
+    target.sawLiveBar = true;
+    console.log(`[BINANCE STOCKS] first live bar ${symbol} $${closePrice}`);
+  }
+  target.prices.push(closePrice);
+  if (Number.isFinite(volume)) target.volumes.push(volume);
+  target.lastPrice = closePrice;
+  if (target.prices.length > 100) target.prices.shift();
+  if (target.volumes.length > 100) target.volumes.shift();
+  evaluateStockSignals(symbol, closePrice, volume);
+}
+
+function ingestStockQuote(symbol, price, volume = null) {
+  const target = stockMarketData[symbol];
+  if (!target || !Number.isFinite(price) || price <= 0) return;
+  target.lastPrice = price;
+  const minuteKey = Math.floor(Date.now() / 60000);
+  if (target.lastBarTime === minuteKey) {
+    target.pendingClose = price;
+    if (Number.isFinite(volume)) target.pendingVolume = volume;
+    return;
+  }
+  if (target.lastBarTime != null && Number.isFinite(target.pendingClose)) {
+    closeStockBar(symbol, target.pendingClose, target.pendingVolume);
+  }
+  target.lastBarTime = minuteKey;
+  target.pendingClose = price;
+  target.pendingVolume = Number.isFinite(volume) ? volume : null;
+}
+
+function normalizeKlineBars(payload) {
+  const rows = Array.isArray(payload) ? payload : payload?.list || payload?.data || payload?.klines || [];
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((row) => {
+      if (Array.isArray(row)) return { t: row[0], c: parseFloat(row[4]), v: parseFloat(row[5]) };
+      return {
+        t: row.t || row.openTime || row.time,
+        c: parseFloat(row.c || row.close || row.price),
+        v: parseFloat(row.v || row.volume),
+      };
+    })
+    .filter((bar) => Number.isFinite(bar.c));
+}
+
+async function fetchStockKlines(ticker) {
+  try {
+    const data = await binanceSignedRequest("GET", "/sapi/v1/equity/market/klines", { symbol: ticker, interval: "1m", limit: 50 });
+    const bars = normalizeKlineBars(data);
+    if (bars.length) return bars;
+  } catch (err) {
+    console.warn(`[BINANCE STOCK KLINES ${ticker}]`, err.message);
+  }
+  for (const pair of [`${ticker}XUSDT`, `${ticker}USDT`]) {
+    try {
+      const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${pair}&interval=1m&limit=50`);
+      const data = await res.json();
+      const bars = normalizeKlineBars(data);
+      if (bars.length) return bars;
+    } catch {
+      // try next pair
+    }
+  }
+  return [];
+}
+
+async function bootstrapBinanceStocks() {
+  if (STOCK_SYMBOLS.length === 0) return;
+  console.log(`Bootstrapping Binance stock quotes for: ${STOCK_SYMBOLS.join(", ")}...`);
+  await Promise.all(
+    STOCK_SYMBOLS.map(async (symbol) => {
+      const bars = await fetchStockKlines(symbol);
+      if (applyStockBars(symbol, bars)) {
+        stockMarketData[symbol].lastBarTime = Math.floor(Date.now() / 60000);
+        stockMarketData[symbol].pendingClose = stockMarketData[symbol].lastPrice;
+        console.log(`[BINANCE STOCKS] Seeded ${symbol} with ${bars.length} 1m bars, last $${stockMarketData[symbol].lastPrice}`);
+        return;
+      }
+      const px = await fetchEquityQuote(symbol, { maxAgeMs: 0 });
+      if (Number.isFinite(px)) {
+        stockMarketData[symbol].lastPrice = px;
+        stockMarketData[symbol].prices = [px];
+        console.log(`[BINANCE STOCKS] ${symbol} last $${px}`);
+      } else {
+        console.warn(`[BINANCE STOCKS] No quote yet for ${symbol}`);
+      }
+    }),
+  );
+}
+
+async function pollBinanceStockQuotes() {
+  for (const symbol of STOCK_SYMBOLS) {
+    const px = await fetchEquityQuote(symbol, { maxAgeMs: 8000 });
+    if (Number.isFinite(px)) ingestStockQuote(symbol, px);
+  }
 }
 
 function applyStockSnapshot(symbol, snapshot) {
@@ -2577,14 +2868,11 @@ app.get("/api/stocks", (req, res) => {
 
   res.json({
     success: true,
-    source: "alpaca",
-    feed: "iex",
+    source: "binance",
+    feed: "equity",
     interval: "1m",
-    baseUrl: ALPACA_BASE_URL,
-    connected: Boolean(alpacaStockWs && alpacaStockWs.readyState === WebSocket.OPEN),
-    marketOpen: alpacaClock.is_open,
-    nextOpen: alpacaClock.next_open,
-    nextClose: alpacaClock.next_close,
+    connected: STOCK_SYMBOLS.some((symbol) => Number.isFinite(stockMarketData[symbol]?.lastPrice)),
+    marketOpen: null,
     stocks,
   });
 });
@@ -2763,11 +3051,12 @@ app.use(express.static("public"));
     if (botSession.enabled) void scanAutopilotUniverse().catch((err) => console.error("[AUTOPILOT] scan", err.message));
   }, BOT_SCAN_MS);
   await bootstrapHistoricalData();
-  await bootstrapStockHistoricalData();
+  await bootstrapBinanceStocks();
   connectMultiStreamWS();
-  connectAlpacaStockWS();
-  setInterval(refreshStockSnapshots, 60000);
-  setInterval(refreshAlpacaClock, 60000);
+  await pollBinanceStockQuotes();
+  setInterval(() => {
+    void pollBinanceStockQuotes().catch((err) => console.warn("[BINANCE STOCKS]", err.message));
+  }, 15000);
   if (botSession.enabled) {
     setTimeout(() => {
       void scanAutopilotUniverse().catch((err) => console.error("[AUTOPILOT] scan", err.message));
