@@ -172,7 +172,7 @@ function loadSettingsFromDb() {
     console.log("Loaded alert config from DB:", alertConfig);
     console.log("Loaded bot config from DB:", botConfig);
   } catch (err) {
-    console.error("Error loading settings from DB:", err.message);
+    console.error("Error loading settings from DB:", err?.message || err);
   }
 }
 
@@ -374,7 +374,6 @@ function restoreBotSession(raw) {
       positions: parsed.positions && typeof parsed.positions === "object" ? parsed.positions : {},
       busy: false,
     };
-    seedBankrollFromSession();
     if (botSession.enabled) {
       console.log(`[AUTOPILOT] Restored enabled session · cash $${Number(botSession.cashUsdt || 0).toFixed(2)}`);
     }
