@@ -16,7 +16,10 @@ let db;
 
 // Memory store for user's active Binance spot balances & lot size rules
 const availableBalances = { USDT: 0 };
+const lockedBalances = {};
 const symbolLotSizes = {}; // Stores stepSize precision for each symbol
+const tickerPriceCache = {};
+const binanceStockAssets = new Set();
 
 // Default Strategy Config (fallback if database is empty)
 let config = {
@@ -262,10 +265,32 @@ function getTakerFeeRate() {
 }
 
 function getAssetUsdPrice(asset) {
-  if (!asset || asset === "USDT") return 1;
-  const tick = marketData[`${asset}USDT`];
+  if (!asset || asset === "USDT" || asset === "USD") return 1;
+  const upper = String(asset).toUpperCase();
+  const tick = marketData[`${upper}USDT`];
   if (tick?.prices?.length) return tick.prices[tick.prices.length - 1];
+  if (tickerPriceCache[`${upper}USDT`]?.price) return tickerPriceCache[`${upper}USDT`].price;
+  if (tickerPriceCache[upper]?.price) return tickerPriceCache[upper].price;
+  const stock = stockMarketData[upper];
+  if (Number.isFinite(stock?.lastPrice)) return stock.lastPrice;
   return null;
+}
+
+function stockTickerFromAsset(asset) {
+  const a = String(asset || "").toUpperCase();
+  if (!a) return "";
+  if (STOCK_SYMBOLS.includes(a)) return a;
+  for (const ticker of STOCK_SYMBOLS) {
+    if (a === `${ticker}X` || a === `${ticker}B` || a === `B${ticker}`) return ticker;
+  }
+  return a.replace(/[XB]$/, "");
+}
+
+function isStockAsset(asset) {
+  const a = String(asset || "").toUpperCase();
+  if (!a) return false;
+  if (STOCK_SYMBOLS.includes(a) || binanceStockAssets.has(a)) return true;
+  return STOCK_SYMBOLS.some((s) => a === s || a === `${s}X` || a === `${s}B` || a === `B${s}`);
 }
 
 function getNetPnlPercent(avgEntryPrice, closePrice) {
@@ -730,8 +755,11 @@ async function updateAccountBalances() {
     if (data.balances) {
       data.balances.forEach((b) => {
         const free = parseFloat(b.free);
+        const locked = parseFloat(b.locked);
         if (free > 0) availableBalances[b.asset] = free;
         else delete availableBalances[b.asset];
+        if (Number.isFinite(locked) && locked > 0) lockedBalances[b.asset] = locked;
+        else delete lockedBalances[b.asset];
       });
     } else {
       // Print Binance rejection message directly in terminal logs
@@ -748,6 +776,15 @@ function collectSpotTradeSymbols() {
   Object.keys(availableBalances).forEach((asset) => {
     if (!asset || asset === "USDT" || asset === "USD") return;
     symbols.add(`${asset}USDT`);
+    if (isStockAsset(asset)) {
+      symbols.add(`${asset}USDT`);
+      symbols.add(`${String(asset).toUpperCase().replace(/X$/, "")}USDT`);
+    }
+  });
+
+  STOCK_SYMBOLS.forEach((ticker) => {
+    symbols.add(`${ticker}USDT`);
+    symbols.add(`${ticker}XUSDT`);
   });
 
   try {
@@ -875,7 +912,7 @@ function persistImportedTrades(trades) {
     const orderId = trade.orderId == null ? "" : String(trade.orderId);
     if (!orderId || known.has(orderId)) return;
 
-    db.run(`INSERT INTO trades (symbol, side, price, qty, usdt_amount, order_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
+    db.run(`INSERT INTO trades (symbol, side, price, qty, usdt_amount, order_id, timestamp, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
       trade.symbol,
       trade.side,
       trade.price || 0,
@@ -883,6 +920,7 @@ function persistImportedTrades(trades) {
       trade.amount || 0,
       orderId,
       trade.timestamp,
+      trade.source || "binance",
     ]);
     known.add(orderId);
     imported++;
@@ -915,6 +953,258 @@ async function syncBinanceTradeHistory() {
   const trades = aggregateBinanceFills(fills).sort((a, b) => b.timestamp - a.timestamp);
   const imported = persistImportedTrades(trades);
   return { trades, imported, symbols };
+}
+
+async function binanceSignedRequest(method, path, params = {}) {
+  const apiKey = process.env.BINANCE_API_KEY;
+  const secretKey = process.env.BINANCE_SECRET_KEY;
+  if (!apiKey || !secretKey) throw new Error("Missing API keys.");
+
+  const timestamp = Date.now();
+  const search = new URLSearchParams();
+  Object.entries({ ...params, timestamp }).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    search.append(key, String(value));
+  });
+  const signature = crypto.createHmac("sha256", secretKey).update(search.toString()).digest("hex");
+  search.append("signature", signature);
+  const response = await fetch(`https://api.binance.com${path}?${search.toString()}`, {
+    method,
+    headers: { "X-MBX-APIKEY": apiKey },
+  });
+  return response.json();
+}
+
+async function fetchTickerPrice(symbol) {
+  const sym = String(symbol || "").toUpperCase();
+  if (!sym) return null;
+  const cached = tickerPriceCache[sym];
+  if (cached && Date.now() - cached.at < 30000) return cached.price;
+  try {
+    const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${sym}`);
+    const data = await res.json();
+    const price = parseFloat(data.price);
+    if (Number.isFinite(price)) {
+      tickerPriceCache[sym] = { price, at: Date.now() };
+      return price;
+    }
+  } catch (err) {
+    console.warn(`[TICKER ${sym}]`, err.message);
+  }
+  return null;
+}
+
+async function fetchEquityQuote(symbol) {
+  const ticker = stockTickerFromAsset(symbol);
+  if (!ticker) return null;
+  const cached = tickerPriceCache[`EQ_${ticker}`];
+  if (cached && Date.now() - cached.at < 30000) return cached.price;
+  try {
+    const data = await binanceSignedRequest("GET", "/sapi/v1/equity/market/quote", { symbol: ticker });
+    const price = parseFloat(data?.price || data?.lastPrice || data?.data?.price || data?.[0]?.price);
+    if (Number.isFinite(price)) {
+      tickerPriceCache[`EQ_${ticker}`] = { price, at: Date.now() };
+      return price;
+    }
+  } catch (err) {
+    console.warn(`[BINANCE EQUITY QUOTE ${ticker}]`, err.message);
+  }
+  const alpacaPx = stockMarketData[ticker]?.lastPrice;
+  return Number.isFinite(alpacaPx) ? alpacaPx : null;
+}
+
+async function resolveUsdValue(asset, qty) {
+  const amount = parseFloat(qty) || 0;
+  if (!amount) return 0;
+  const direct = getAssetUsdPrice(asset);
+  if (direct) return amount * direct;
+  const upper = String(asset || "").toUpperCase();
+  if (isStockAsset(upper)) {
+    const equityPx = await fetchEquityQuote(upper);
+    if (equityPx) return amount * equityPx;
+  }
+  const price =
+    (await fetchTickerPrice(`${upper}USDT`)) ||
+    (await fetchTickerPrice(`${upper.replace(/[XB]$/, "")}USDT`)) ||
+    (await fetchTickerPrice(upper));
+  return price ? amount * price : 0;
+}
+
+function normalizeEquityTrades(payload) {
+  const rows = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.list)
+      ? payload.list
+      : Array.isArray(payload?.trades)
+        ? payload.trades
+        : Array.isArray(payload?.data)
+          ? payload.data
+          : [];
+  return rows
+    .map((row) => {
+      const symbol = String(row.symbol || row.s || "").toUpperCase();
+      const orderId = row.orderId || row.order_id || row.id;
+      const qty = parseFloat(row.qty || row.executedQty || row.quantity || 0);
+      const price = parseFloat(row.price || row.avgPrice || 0);
+      const quote = parseFloat(row.quoteQty || row.quoteQuantity || qty * price || 0);
+      const sideRaw = String(row.side || "").toUpperCase();
+      const side = sideRaw === "BUY" || sideRaw === "SELL" ? sideRaw : row.isBuyer === false ? "SELL" : "BUY";
+      const timestamp = parseInt(row.time || row.tradeTime || row.updateTime || Date.now(), 10);
+      if (!symbol || !orderId) return null;
+      const base = symbol.replace(/USDT$|USD$|USDC$/, "");
+      if (base) binanceStockAssets.add(base);
+      return {
+        id: `binance_eq_${orderId}`,
+        timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
+        symbol,
+        side,
+        amount: parseFloat(quote.toFixed(2)),
+        status: "SUCCESS",
+        outcome: `Binance stock #${orderId}`,
+        orderId,
+        qty,
+        price,
+        source: "binance-stock",
+      };
+    })
+    .filter(Boolean);
+}
+
+async function fetchBinanceEquityTrades() {
+  const trades = [];
+  const now = Date.now();
+  const week = 7 * 24 * 60 * 60 * 1000;
+  for (let i = 0; i < 4; i++) {
+    const endTime = now - i * week;
+    const startTime = endTime - week;
+    try {
+      const data = await binanceSignedRequest("GET", "/sapi/v1/equity/trade/history", {
+        startTime,
+        endTime,
+        size: 100,
+      });
+      if (data?.code && !Array.isArray(data) && !data.list && !data.trades) {
+        if (i === 0) console.warn("[BINANCE EQUITY TRADES]", data.msg || JSON.stringify(data));
+        break;
+      }
+      trades.push(...normalizeEquityTrades(data));
+    } catch (err) {
+      console.warn("[BINANCE EQUITY TRADES]", err.message);
+      break;
+    }
+  }
+  return trades;
+}
+
+function mapBinanceAssetRow(row, venue) {
+  const asset = String(row.asset || row.tokenizedAsset || row.symbol || "").toUpperCase();
+  const free = parseFloat(row.free || row.available || row.qty || 0);
+  const locked = parseFloat(row.locked || row.freeze || row.freezeAmount || 0);
+  if (!asset || free + locked <= 0.0001) return null;
+  if (isStockAsset(asset)) binanceStockAssets.add(asset);
+  return { asset, free, locked, venue: isStockAsset(asset) ? "binance-stock" : venue };
+}
+
+async function fetchBinanceFundingStocks() {
+  try {
+    const data = await binanceSignedRequest("POST", "/sapi/v1/asset/get-funding-asset", {});
+    const rows = Array.isArray(data) ? data : [];
+    return rows.map((row) => mapBinanceAssetRow(row, "binance-spot")).filter((row) => row && row.venue === "binance-stock");
+  } catch (err) {
+    console.warn("[BINANCE FUNDING STOCKS]", err.message);
+    return [];
+  }
+}
+
+async function fetchBinanceUserAssets() {
+  try {
+    const data = await binanceSignedRequest("POST", "/sapi/v1/asset/getUserAsset", { needBtcValuation: "false" });
+    const rows = Array.isArray(data) ? data : [];
+    return rows.map((row) => mapBinanceAssetRow(row, "binance-spot")).filter(Boolean);
+  } catch (err) {
+    console.warn("[BINANCE USER ASSETS]", err.message);
+    return [];
+  }
+}
+
+async function loadBinanceStockUniverse() {
+  try {
+    const res = await fetch("https://api.binance.com/sapi/v1/equity/market/tokenized-assets");
+    const data = await res.json();
+    const rows = Array.isArray(data) ? data : data?.list || data?.assets || data?.data || [];
+    rows.forEach((row) => {
+      ["asset", "tokenizedAsset", "symbol", "baseAsset"].forEach((key) => {
+        const value = String(row[key] || "").toUpperCase().replace(/USDT$|USD$/, "");
+        if (value) binanceStockAssets.add(value);
+      });
+    });
+    if (binanceStockAssets.size) {
+      console.log(`[BINANCE STOCKS] Loaded ${binanceStockAssets.size} tokenized equity assets.`);
+    }
+  } catch (err) {
+    console.warn("[BINANCE STOCK UNIVERSE]", err.message);
+  }
+}
+
+async function buildHoldingsList() {
+  await Promise.all([updateAccountBalances(), loadBinanceStockUniverse()]);
+  const [fundingStocks, userAssets] = await Promise.all([fetchBinanceFundingStocks(), fetchBinanceUserAssets()]);
+  const merged = new Map();
+
+  const addRow = (row) => {
+    if (!row) return;
+    const key = `${row.venue}:${row.asset}`;
+    const prev = merged.get(key);
+    if (prev) {
+      prev.free += row.free;
+      prev.locked += row.locked;
+      return;
+    }
+    merged.set(key, { ...row });
+  };
+
+  Object.keys(availableBalances).forEach((asset) => {
+    addRow({
+      asset,
+      free: availableBalances[asset] || 0,
+      locked: lockedBalances[asset] || 0,
+      venue: isStockAsset(asset) ? "binance-stock" : "binance-spot",
+    });
+  });
+  userAssets.forEach(addRow);
+  fundingStocks.forEach(addRow);
+
+  const rows = [];
+  for (const row of merged.values()) {
+    const total = row.free + row.locked;
+    if (total <= 0.0001) continue;
+    const usdValue = await resolveUsdValue(row.asset, total);
+    rows.push({
+      asset: row.asset,
+      free: row.free.toFixed(4),
+      locked: row.locked.toFixed(4),
+      total: total.toFixed(4),
+      usdValue: usdValue.toFixed(2),
+      venue: row.venue,
+    });
+  }
+
+  rows.sort((a, b) => {
+    if (a.venue !== b.venue) return a.venue === "binance-stock" ? -1 : 1;
+    return a.asset.localeCompare(b.asset);
+  });
+  return rows;
+}
+
+async function syncAllTradeHistory() {
+  const [spot, equity] = await Promise.all([syncBinanceTradeHistory(), fetchBinanceEquityTrades()]);
+  persistImportedTrades(equity);
+  const trades = [...spot.trades, ...equity].sort((a, b) => b.timestamp - a.timestamp);
+  return {
+    trades,
+    imported: spot.imported,
+    symbols: spot.symbols,
+  };
 }
 
 async function placeMarketOrder({ symbol, side, usdtAmount, quantity, sellAll = false, alertId = null, source = "manual" }) {
@@ -2029,30 +2319,12 @@ app.get("/api/status", (req, res) => {
 });
 
 app.get("/api/holdings", async (req, res) => {
-  await updateAccountBalances();
-
-  const activeBalances = Object.keys(availableBalances)
-    .filter((asset) => availableBalances[asset] > 0.0001) // Show any asset with balance > 0.0001
-    .map((asset) => {
-      const free = availableBalances[asset];
-      let usdVal = free;
-
-      if (asset !== "USDT" && asset !== "USD") {
-        const pair = `${asset}USDT`;
-        const currentPrice = marketData[pair]?.prices.slice(-1)[0] || 0;
-        usdVal = free * currentPrice;
-      }
-
-      return {
-        asset,
-        free: free.toFixed(4),
-        locked: "0.0000",
-        total: free.toFixed(4),
-        usdValue: usdVal.toFixed(2),
-      };
-    });
-
-  res.json({ success: true, balances: activeBalances });
+  try {
+    const balances = await buildHoldingsList();
+    res.json({ success: true, balances });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.get("/api/trades", async (req, res) => {
@@ -2063,7 +2335,7 @@ app.get("/api/trades", async (req, res) => {
   }
 
   try {
-    const { trades, imported, symbols } = await syncBinanceTradeHistory();
+    const { trades, imported, symbols } = await syncAllTradeHistory();
     res.json({
       success: true,
       imported,
@@ -2170,6 +2442,7 @@ app.use(express.static("public"));
 (async () => {
   await initDatabase();
   await fetchExchangeInfo();
+  await loadBinanceStockUniverse();
   await updateAccountBalances();
   setInterval(updateAccountBalances, 15000);
   setInterval(() => {

@@ -857,7 +857,7 @@
 
         <div class="panel-card">
           <div class="panel-header">
-            <span>💼 Binance Spot Holdings</span>
+            <span>💼 Holdings</span>
             <button class="time-btn" id="refresh-holdings-btn" onclick="fetchHoldings(true)">🔄 Refresh</button>
           </div>
           <table class="holdings-table">
@@ -867,11 +867,12 @@
                 <th>Available</th>
                 <th>Locked</th>
                 <th>Est. USD</th>
+                <th>Venue</th>
               </tr>
             </thead>
             <tbody id="holdings-body">
               <tr>
-                <td colspan="4" style="color: var(--text-muted)">Loading Spot wallet...</td>
+                <td colspan="5" style="color: var(--text-muted)">Loading wallets...</td>
               </tr>
             </tbody>
           </table>
@@ -911,7 +912,7 @@
           <button class="time-btn" id="refresh-outcomes-btn" onclick="fetchTradeOutcomes(true)">🔄 Refresh</button>
         </div>
         <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem">
-          In-app attempts plus Spot fills from the Binance app, website, or this terminal.
+          In-app attempts plus Binance Spot and Binance stock fills. Alpaca is only used for live stock prices.
         </div>
         <table class="outcome-table">
           <thead>
@@ -1395,6 +1396,11 @@
         return toast;
       }
 
+      function venueLabel(venue) {
+        if (venue === "binance-stock") return "Binance stock";
+        return "Binance Spot";
+      }
+
       async function fetchHoldings(showFeedback = false) {
         const tbody = document.getElementById("holdings-body");
         const btn = document.getElementById("refresh-holdings-btn");
@@ -1416,32 +1422,33 @@
           <td>${b.free}</td>
           <td style="color:var(--text-muted);">${b.locked}</td>
           <td style="font-weight:700; color:var(--green-up);">$${b.usdValue}</td>
+          <td style="color:var(--text-muted); font-size:0.75rem;">${venueLabel(b.venue)}</td>
         </tr>
       `,
               )
               .join("");
             if (showFeedback) {
               const n = data.balances.length;
-              showToast("Holdings Updated", `Loaded ${n} asset${n === 1 ? "" : "s"} from Binance Spot.`, "success");
+              showToast("Holdings Updated", `Loaded ${n} holding${n === 1 ? "" : "s"} from Binance.`, "success");
             }
           } else {
             tbody.innerHTML = `
         <tr>
-          <td colspan="4" style="color:var(--text-muted); text-align:center; padding:1rem;">
-            No tracked spot balances found (> 0.0001).
+          <td colspan="5" style="color:var(--text-muted); text-align:center; padding:1rem;">
+            No tracked balances found (> 0.0001).
           </td>
         </tr>`;
             if (showFeedback) {
-              showToast("Holdings Updated", "No tracked spot balances found.", "info");
+              showToast("Holdings Updated", "No tracked balances found.", "info");
             }
           }
         } catch (err) {
           console.error("Holdings error:", err);
           if (tbody) {
-            tbody.innerHTML = `<tr><td colspan="4" style="color:var(--red-down);">Connection Error: Unable to fetch holdings.</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red-down);">Connection Error: Unable to fetch holdings.</td></tr>`;
           }
           if (showFeedback) {
-            showToast("Refresh Failed", "Unable to fetch Binance Spot holdings.", "error");
+            showToast("Refresh Failed", "Unable to fetch holdings.", "error");
           }
         } finally {
           if (btn) {
@@ -1615,7 +1622,7 @@
 
           if (showFeedback) {
             const n = Array.isArray(data.trades) ? data.trades.length : 0;
-            showToast("Ledger Updated", n ? `Loaded ${n} fill${n === 1 ? "" : "s"} from Binance Spot.` : "No Spot fills found for tracked symbols.", n ? "success" : "info");
+            showToast("Ledger Updated", n ? `Loaded ${n} fill${n === 1 ? "" : "s"} from Binance Spot and stocks.` : "No fills found yet.", n ? "success" : "info");
           }
         } catch (err) {
           console.error("Trade ledger error:", err);
@@ -1645,7 +1652,7 @@
           tbody.innerHTML = `
           <tr>
             <td class="outcome-empty" colspan="6" style="color:var(--text-muted); font-style:italic; padding:1rem 0;">
-              No trade outcomes yet. Fills from Binance Spot and in-app attempts will show here.
+              No trade outcomes yet. Fills from Binance Spot, Binance stocks, and in-app attempts will show here.
             </td>
           </tr>
         `;
