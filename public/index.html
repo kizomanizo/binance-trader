@@ -844,10 +844,10 @@
           <div class="panel-header">
             <span>📈 Realized PnL</span>
             <div class="time-toggles">
-              <button class="time-btn" onclick="fetchPnL('day', this)">24H</button>
+              <button class="time-btn active" onclick="fetchPnL('day', this)">24H</button>
               <button class="time-btn" onclick="fetchPnL('week', this)">7D</button>
               <button class="time-btn" onclick="fetchPnL('month', this)">30D</button>
-              <button class="time-btn active" onclick="fetchPnL('all', this)">ALL</button>
+              <button class="time-btn" onclick="fetchPnL('all', this)">ALL</button>
             </div>
           </div>
           <div class="pnl-value" id="pnl-total-val">$0.00</div>
@@ -911,9 +911,7 @@
           <span>💾 Trade Outcome Ledger</span>
           <button class="time-btn" id="refresh-outcomes-btn" onclick="fetchTradeOutcomes(true)">🔄 Refresh</button>
         </div>
-        <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem">
-          In-app attempts plus Binance Spot and Binance stock fills. Alpaca is only used for live stock prices.
-        </div>
+        <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem">In-app attempts plus Binance Spot and Binance stock fills. Alpaca is only used for live stock prices.</div>
         <table class="outcome-table">
           <thead>
             <tr>
@@ -998,9 +996,7 @@
         <div class="form-group">
           <label>Take Profit (%)</label>
           <input type="number" id="cfg-takeProfit" step="0.1" min="0.1" placeholder="1.5" />
-          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">
-            Round-trip Binance fees are ~0.2% (~0.15% with BNB). Keep this above that floor.
-          </div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">Round-trip Binance fees are ~0.2% (~0.15% with BNB). Keep this above that floor.</div>
         </div>
 
         <div class="form-group">
@@ -1044,7 +1040,10 @@
     <div class="modal-overlay" id="alertSettingsModal">
       <div class="modal">
         <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-yellow); margin-bottom: 0.5rem">🔔 Alert Settings</div>
-        <p class="alert-note">Toggles and allowed hours control Telegram only. In-app strategy alerts stay on. Leave hours empty for 24/7 when a channel is on. Stock Telegram: BUY when you do not hold that name, SELL (TP/SL) when you do. No overbought spam on stocks you do not own.</p>
+        <p class="alert-note">
+          Toggles and allowed hours control Telegram only. In-app strategy alerts stay on. Leave hours empty for 24/7 when a channel is on. Stock Telegram: BUY when you do not hold that name, SELL
+          (TP/SL) when you do. No overbought spam on stocks you do not own.
+        </p>
 
         <div class="alert-section">
           <div class="toggle-row">
@@ -1458,7 +1457,7 @@
         }
       }
 
-      let currentPnlTf = "all";
+      let currentPnlTf = "day";
 
       async function fetchPnL(tf = currentPnlTf, btn = null) {
         currentPnlTf = tf;
@@ -2148,7 +2147,6 @@
             const sellBtn = document.getElementById(`sellbtn-${m.symbol}`);
             if (buyBtn) buyBtn.disabled = !m.canBuy;
             if (sellBtn) sellBtn.disabled = !m.canSell;
-
           });
 
           updateButtonVisibility();
@@ -2314,9 +2312,7 @@
           const strip = document.getElementById("stock-strip");
           if (strip) {
             const nextOpen = data.nextOpen ? ` · next open ${new Date(data.nextOpen).toLocaleString()}` : "";
-            strip.title = data.marketOpen === false
-              ? `Alpaca IEX · last session prices${nextOpen}`
-              : "Alpaca IEX · in-app notices + Telegram";
+            strip.title = data.marketOpen === false ? `Alpaca IEX · last session prices${nextOpen}` : "Alpaca IEX · in-app notices + Telegram";
           }
 
           data.stocks.forEach((s) => {
