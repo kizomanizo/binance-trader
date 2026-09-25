@@ -1472,9 +1472,24 @@ async function convertUsdtToUsdc(usdtAmount) {
     quoteOrderQty: qty,
   });
   if (!data?.orderId) return { success: false, error: data?.msg || "USDT to USDC convert failed", details: data };
-  console.log(`[WALLET] Converted ${qty} USDT → USDC (order ${data.orderId})`);
+  const usdc = parseFloat(data.executedQty || 0);
+  const spent = parseFloat(data.cummulativeQuoteQty || qty);
+  console.log(`[WALLET] Converted ${spent} USDT → ${usdc || qty} USDC (order ${data.orderId})`);
   await updateAccountBalances();
-  return { success: true, details: data };
+  return { success: true, usdc, spent, details: data };
+}
+
+async function pullFundingToSpot(asset, needed) {
+  const upper = String(asset || "").toUpperCase();
+  const spot = availableBalances[upper] || 0;
+  const shortfall = Math.max(0, needed - spot);
+  if (shortfall <= 1e-8) return { success: true, skipped: true };
+  const funding = await getFundingFree(upper);
+  if (funding <= 1e-8) return { success: true, skipped: true, funding: 0 };
+  const xfer = await transferFundingToSpot(upper, Math.min(shortfall, funding));
+  if (!xfer.success) return xfer;
+  await updateAccountBalances();
+  return xfer;
 }
 
 async function ensureStockBuyQuote(needed) {
@@ -1486,37 +1501,65 @@ async function ensureStockBuyQuote(needed) {
   const spot = { USDC: availableBalances.USDC || 0, USDT: availableBalances.USDT || 0 };
   const funding = { USDC: usdcFunding, USDT: usdtFunding };
   console.log(
-    `[STOCK BUY FUNDS] Spot USDC $${spot.USDC.toFixed(2)} USDT $${spot.USDT.toFixed(2)} · Funding USDC $${funding.USDC.toFixed(2)} USDT $${funding.USDT.toFixed(2)} · need $${need.toFixed(2)}`,
+    `[STOCK BUY FUNDS] Spot USDC $${spot.USDC.toFixed(2)} USDT $${spot.USDT.toFixed(2)} · Funding USDC $${funding.USDC.toFixed(2)} USDT $${funding.USDT.toFixed(2)} · need $${need.toFixed(2)} USDC`,
   );
 
-  const pick = ["USDC", "USDT"].find((asset) => spot[asset] + funding[asset] + 1e-8 >= need);
-  if (!pick) {
-    const spotTotal = spot.USDC + spot.USDT;
-    const fundingTotal = funding.USDC + funding.USDT;
+  const usdcPull = await pullFundingToSpot("USDC", need);
+  if (!usdcPull.success) {
     return {
-      error: `Need $${need.toFixed(2)} USDC or USDT for this stock buy. Spot has $${spotTotal.toFixed(2)}, Funding has $${fundingTotal.toFixed(2)}. Binance stocks settle in USDC from Spot.`,
+      error: `Need $${need.toFixed(2)} USDC. Moving USDC from Funding failed: ${usdcPull.error}. Enable Universal Transfer on the API key, or move USDC to Spot in the Binance app.`,
+      details: usdcPull.details,
     };
   }
 
-  const shortfall = Math.max(0, need - (spot[pick] || 0));
-  if (shortfall > 1e-8) {
-    const xfer = await transferFundingToSpot(pick, Math.min(shortfall, funding[pick]));
-    if (!xfer.success) {
-      return {
-        error: `$${need.toFixed(2)} ${pick} is in Funding, but moving it to Spot failed: ${xfer.error}. Enable Universal Transfer on the API key, or move ${pick} to Spot in the Binance app.`,
-        details: xfer.details,
-      };
-    }
-    await updateAccountBalances();
+  let usdc = availableBalances.USDC || 0;
+  if (usdc + 1e-8 >= need) return { asset: "USDC", amount: need };
+
+  const usdcShortfall = need - usdc;
+  let usdtToSpend = Math.max(usdcShortfall * 1.003, usdcShortfall + 0.02);
+  if (usdtToSpend < 5) usdtToSpend = 5;
+
+  const usdtPull = await pullFundingToSpot("USDT", usdtToSpend);
+  if (!usdtPull.success) {
+    return {
+      error: `Need $${need.toFixed(2)} USDC. Moving USDT from Funding so it can be converted failed: ${usdtPull.error}.`,
+      details: usdtPull.details,
+    };
   }
 
-  return { asset: pick, amount: need };
+  const spotUsdt = availableBalances.USDT || 0;
+  if (spotUsdt + 1e-8 < usdcShortfall) {
+    return {
+      error: `Need $${need.toFixed(2)} USDC for this stock buy. Spot USDC $${usdc.toFixed(2)}, Spot USDT $${spotUsdt.toFixed(2)}. Binance stocks only accept USDC.`,
+    };
+  }
+
+  const conv = await convertUsdtToUsdc(Math.min(spotUsdt, usdtToSpend));
+  if (!conv.success) {
+    return {
+      error: `Binance stocks require USDC. Converting USDT failed: ${conv.error}`,
+      details: conv.details,
+    };
+  }
+
+  usdc = availableBalances.USDC || 0;
+  if (usdc + 1e-8 < 5) {
+    return { error: `Converted USDT but only have $${usdc.toFixed(2)} USDC, which is below the stock minimum.`, details: conv.details };
+  }
+
+  return { asset: "USDC", amount: Math.min(need, usdc) };
 }
 
 function isEquityInsufficientBalance(result) {
   const code = Number(result?.code);
   const msg = String(result?.msg || "").toLowerCase();
   return code === 486405 || msg.includes("insufficient balance");
+}
+
+function isEquityUnsupportedQuote(result) {
+  const code = Number(result?.code);
+  const msg = String(result?.msg || "").toLowerCase();
+  return code === 486201 || msg.includes("quote asset is not supported");
 }
 
 async function placeEquityMarketOrder({ ticker, side, usdtAmount, quantity, sellAll = false, alertId = null, source = "manual" }) {
@@ -1536,31 +1579,19 @@ async function placeEquityMarketOrder({ ticker, side, usdtAmount, quantity, sell
       const funded = await ensureStockBuyQuote(tradeAmount);
       if (funded.error) return { success: false, error: funded.error, details: funded.details };
       params.notional = Number(funded.amount).toFixed(2);
-      params.quoteAsset = funded.asset;
-      params.walletType = "MAIN";
-      console.log(`[BINANCE STOCKS] BUY ${ticker} notional=${params.notional} quoteAsset=${params.quoteAsset} wallet=MAIN`);
-    }
-
-    let result = await binanceSignedRequest("POST", "/sapi/v1/equity/order/place", params);
-    if (!isSell && isEquityInsufficientBalance(result) && params.quoteAsset === "USDT") {
-      console.warn("[BINANCE STOCKS] USDT quote rejected, converting to USDC and retrying");
-      const conv = await convertUsdtToUsdc(params.notional);
-      if (!conv.success) {
-        return {
-          success: false,
-          error: `${result.msg || "Insufficient balance."} Binance stocks settle in USDC; converting USDT failed: ${conv.error}`,
-          details: { order: result, convert: conv.details },
-        };
-      }
       params.quoteAsset = "USDC";
-      result = await binanceSignedRequest("POST", "/sapi/v1/equity/order/place", params);
+      params.walletType = "MAIN";
+      console.log(`[BINANCE STOCKS] BUY ${ticker} notional=${params.notional} quoteAsset=USDC wallet=MAIN`);
     }
 
+    const result = await binanceSignedRequest("POST", "/sapi/v1/equity/order/place", params);
     const orderId = result?.orderId || result?.order_id || result?.id;
     if (!orderId || (result?.code && result.code !== 200)) {
-      const hint = isEquityInsufficientBalance(result)
-        ? " Binance stocks settle in USDC from the Spot wallet. Move USDT/USDC to Spot if it is still in Funding."
-        : "";
+      const hint = isEquityUnsupportedQuote(result)
+        ? " Binance stocks only accept USDC."
+        : isEquityInsufficientBalance(result)
+          ? " Binance stocks settle in USDC from the Spot wallet."
+          : "";
       return { success: false, error: (result?.msg || "Binance stock order rejected") + hint, details: result };
     }
 

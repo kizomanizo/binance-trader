@@ -2195,7 +2195,7 @@
               ? `Execute a Binance stock MARKET SELL for ${symbol.toUpperCase()}? This sells the full holding unless you set a quantity.`
               : `Execute MARKET SELL for ${symbol.toUpperCase()}? Leave quantity empty to clear the full free balance (leftover dust is converted to BNB).`
             : isStock
-              ? `Execute a Binance stock MARKET BUY for ${symbol.toUpperCase()}? Default size is $${formatTradeAmount(defaultBuyAmount)}. Stocks settle in USDC from Spot; USDT in Funding is moved automatically.`
+              ? `Execute a Binance stock MARKET BUY for ${symbol.toUpperCase()}? Default size is $${formatTradeAmount(defaultBuyAmount)}. Stocks settle in USDC; Spot USDT is converted first if needed.`
               : `Execute a MARKET BUY for ${symbol.toUpperCase()}? Default size is $${formatTradeAmount(defaultBuyAmount)} USDT — change it below for this trade only.`;
 
         const confirmation = await showConfirmationWithPassword(confirmTitle, confirmMessage, isSell || sellAll ? { type: "sell" } : { type: "buy", defaultAmount: defaultBuyAmount });
