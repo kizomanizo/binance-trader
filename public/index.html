@@ -4,6 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Binance Micro-Trader Terminal</title>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0e11'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-size='16' font-family='system-ui,sans-serif' font-weight='700' fill='%23f0b90b'%3EB%3C/text%3E%3C/svg%3E"
+    />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
       :root {
@@ -671,6 +676,10 @@
         overflow-y: auto;
       }
 
+      .modal form {
+        margin: 0;
+      }
+
       .form-group {
         margin-bottom: 1rem;
       }
@@ -941,31 +950,34 @@
 
     <div class="modal-overlay" id="confirmModal">
       <div class="modal">
-        <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-yellow); margin-bottom: 0.5rem" id="modalTitle">Confirm Action</div>
-        <div style="color: var(--text-muted); margin-bottom: 1.25rem" id="modalText"></div>
-        <div class="form-group" id="tradeAmountGroup" style="display: none">
-          <label>Buy Amount (USDT)</label>
-          <input type="number" id="tradeAmountInput" min="1" step="0.5" placeholder="Strategy default" />
-          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">Prefills the strategy default. Change it to size this trade only.</div>
-        </div>
-        <div class="form-group" id="tradeSellQtyGroup" style="display: none">
-          <label>Sell Quantity (optional)</label>
-          <input type="number" id="tradeSellQtyInput" min="0" step="any" placeholder="Leave empty to sell 100%" />
-          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">Empty sells the full free balance and converts leftover dust to BNB.</div>
-        </div>
-        <div class="form-group">
-          <label>Trading Password Required</label>
-          <input type="password" id="tradePasswordInput" placeholder="Enter password" />
-        </div>
-        <div style="display: flex; gap: 0.75rem; justify-content: flex-end">
-          <button class="time-btn" id="modalCancel" style="padding: 0.5rem 1rem">Cancel</button>
-          <button class="time-btn active" id="modalConfirm" style="padding: 0.5rem 1rem">Confirm & Execute</button>
-        </div>
+        <form autocomplete="off" onsubmit="event.preventDefault();">
+          <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-yellow); margin-bottom: 0.5rem" id="modalTitle">Confirm Action</div>
+          <div style="color: var(--text-muted); margin-bottom: 1.25rem" id="modalText"></div>
+          <div class="form-group" id="tradeAmountGroup" style="display: none">
+            <label>Buy Amount (USDT)</label>
+            <input type="number" id="tradeAmountInput" min="1" step="0.5" placeholder="Strategy default" />
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">Prefills the strategy default. Change it to size this trade only.</div>
+          </div>
+          <div class="form-group" id="tradeSellQtyGroup" style="display: none">
+            <label>Sell Quantity (optional)</label>
+            <input type="number" id="tradeSellQtyInput" min="0" step="any" placeholder="Leave empty to sell 100%" />
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">Empty sells the full free balance and converts leftover dust to BNB.</div>
+          </div>
+          <div class="form-group">
+            <label>Trading Password Required</label>
+            <input type="password" id="tradePasswordInput" name="trade-password" autocomplete="current-password" placeholder="Enter password" />
+          </div>
+          <div style="display: flex; gap: 0.75rem; justify-content: flex-end">
+            <button type="button" class="time-btn" id="modalCancel" style="padding: 0.5rem 1rem">Cancel</button>
+            <button type="button" class="time-btn active" id="modalConfirm" style="padding: 0.5rem 1rem">Confirm & Execute</button>
+          </div>
+        </form>
       </div>
     </div>
 
     <div class="modal-overlay" id="settingsModal">
       <div class="modal">
+        <form autocomplete="off" onsubmit="event.preventDefault(); saveSettings();">
         <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-yellow); margin-bottom: 1rem">⚙️ Strategy Settings</div>
 
         <div class="form-group">
@@ -1027,18 +1039,20 @@
 
         <div class="form-group">
           <label>Trading Password</label>
-          <input type="password" id="settingsPasswordInput" placeholder="Enter password to save" />
+          <input type="password" id="settingsPasswordInput" name="settings-password" autocomplete="current-password" placeholder="Enter password to save" />
         </div>
 
         <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 1.25rem">
-          <button class="time-btn" onclick="closeSettingsModal()" style="padding: 0.5rem 1rem">Cancel</button>
-          <button class="time-btn active" onclick="saveSettings()" style="padding: 0.5rem 1rem">Save to SQLite</button>
+          <button type="button" class="time-btn" onclick="closeSettingsModal()" style="padding: 0.5rem 1rem">Cancel</button>
+          <button type="submit" class="time-btn active" style="padding: 0.5rem 1rem">Save to SQLite</button>
         </div>
+        </form>
       </div>
     </div>
 
     <div class="modal-overlay" id="alertSettingsModal">
       <div class="modal">
+        <form autocomplete="off" onsubmit="event.preventDefault(); saveAlertSettings();">
         <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-yellow); margin-bottom: 0.5rem">🔔 Alert Settings</div>
         <p class="alert-note">
           Toggles and allowed hours control Telegram only. In-app strategy alerts stay on. Leave hours empty for 24/7 when a channel is on. Stock Telegram: BUY when you do not hold that name, SELL
@@ -1087,19 +1101,21 @@
 
         <div class="form-group">
           <label>Trading Password</label>
-          <input type="password" id="alertSettingsPasswordInput" placeholder="Enter password to save" />
+          <input type="password" id="alertSettingsPasswordInput" name="alert-password" autocomplete="current-password" placeholder="Enter password to save" />
         </div>
         <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: -0.4rem; margin-bottom: 0.5rem" id="alert-timezone-note">Times use the server local clock.</div>
 
         <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 1.25rem">
-          <button class="time-btn" onclick="closeAlertSettingsModal()" style="padding: 0.5rem 1rem">Cancel</button>
-          <button class="time-btn active" onclick="saveAlertSettings()" style="padding: 0.5rem 1rem">Save to SQLite</button>
+          <button type="button" class="time-btn" onclick="closeAlertSettingsModal()" style="padding: 0.5rem 1rem">Cancel</button>
+          <button type="submit" class="time-btn active" style="padding: 0.5rem 1rem">Save to SQLite</button>
         </div>
+        </form>
       </div>
     </div>
 
     <div class="modal-overlay" id="botModal">
       <div class="modal">
+        <form autocomplete="off" onsubmit="event.preventDefault();">
         <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-yellow); margin-bottom: 0.4rem">🤖 Autopilot</div>
         <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 1rem">
           Trades the monitored Spot pairs on 1-minute RSI + volume surge. One clip at a time, fee-aware TP/SL, budget isolated from the rest of your wallet.
@@ -1134,15 +1150,16 @@
 
         <div class="form-group">
           <label>Trading Password Required</label>
-          <input type="password" id="botPasswordInput" placeholder="Enter password" />
+          <input type="password" id="botPasswordInput" name="bot-password" autocomplete="current-password" placeholder="Enter password" />
         </div>
 
         <div style="display: flex; gap: 0.75rem; justify-content: flex-end; flex-wrap: wrap; margin-top: 1.25rem">
-          <button class="time-btn" onclick="closeBotModal()" style="padding: 0.5rem 1rem">Close</button>
-          <button class="time-btn" id="bot-alerts-btn" onclick="updateBotAlerts()" style="padding: 0.5rem 1rem; display: none">Update alerts</button>
-          <button class="time-btn" id="bot-stop-btn" onclick="stopBotFromModal()" style="padding: 0.5rem 1rem; display: none; background: var(--red-down); color: #fff">Stop & park in USDT</button>
-          <button class="time-btn active" id="bot-toggle-btn" onclick="toggleBotFromModal()" style="padding: 0.5rem 1rem">Start Autopilot</button>
+          <button type="button" class="time-btn" onclick="closeBotModal()" style="padding: 0.5rem 1rem">Close</button>
+          <button type="button" class="time-btn" id="bot-alerts-btn" onclick="updateBotAlerts()" style="padding: 0.5rem 1rem; display: none">Update alerts</button>
+          <button type="button" class="time-btn" id="bot-stop-btn" onclick="stopBotFromModal()" style="padding: 0.5rem 1rem; display: none; background: var(--red-down); color: #fff">Stop & park in USDT</button>
+          <button type="button" class="time-btn active" id="bot-toggle-btn" onclick="toggleBotFromModal()" style="padding: 0.5rem 1rem">Start Autopilot</button>
         </div>
+        </form>
       </div>
     </div>
 
@@ -1409,6 +1426,7 @@
 
       function venueLabel(venue) {
         if (venue === "binance-stock") return "Binance stock";
+        if (venue === "binance-funding") return "Binance Funding";
         return "Binance Spot";
       }
 
@@ -2177,7 +2195,7 @@
               ? `Execute a Binance stock MARKET SELL for ${symbol.toUpperCase()}? This sells the full holding unless you set a quantity.`
               : `Execute MARKET SELL for ${symbol.toUpperCase()}? Leave quantity empty to clear the full free balance (leftover dust is converted to BNB).`
             : isStock
-              ? `Execute a Binance stock MARKET BUY for ${symbol.toUpperCase()}? Default size is $${formatTradeAmount(defaultBuyAmount)} USDT.`
+              ? `Execute a Binance stock MARKET BUY for ${symbol.toUpperCase()}? Default size is $${formatTradeAmount(defaultBuyAmount)}. Stocks settle in USDC from Spot; USDT in Funding is moved automatically.`
               : `Execute a MARKET BUY for ${symbol.toUpperCase()}? Default size is $${formatTradeAmount(defaultBuyAmount)} USDT — change it below for this trade only.`;
 
         const confirmation = await showConfirmationWithPassword(confirmTitle, confirmMessage, isSell || sellAll ? { type: "sell" } : { type: "buy", defaultAmount: defaultBuyAmount });
