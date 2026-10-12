@@ -130,7 +130,17 @@ async function initDatabase() {
   ensureColumn("strategy_alerts", "source", "TEXT NOT NULL DEFAULT 'crypto'");
   ensureColumn("trades", "source", "TEXT NOT NULL DEFAULT 'manual'");
   loadSettingsFromDb();
+  repairTradeTimestamps();
   saveDatabase();
+}
+
+function repairTradeTimestamps() {
+  const stmt = db.prepare("SELECT id FROM trades WHERE timestamp > 0 AND timestamp < 1000000000000");
+  const ids = [];
+  while (stmt.step()) ids.push(stmt.getAsObject().id);
+  stmt.free();
+  ids.forEach((id) => db.run("UPDATE trades SET timestamp = timestamp * 1000 WHERE id = ?", [id]));
+  if (ids.length) console.log(`[TRADES] Repaired ${ids.length} second-based timestamps.`);
 }
 
 function ensureColumn(table, column, type) {
@@ -286,6 +296,31 @@ function getTakerFeeRate() {
   return (Number.isFinite(pct) && pct >= 0 ? pct : 0.1) / 100;
 }
 
+function roundTripFeePercent() {
+  return getTakerFeeRate() * 200;
+}
+
+// A 2% target with a 3% stop needs a 60% win rate before fees. Cap the stop
+// inside the target, and refuse a target that cannot clear four round trips.
+function effectiveExits() {
+  const fee = roundTripFeePercent();
+  let takeProfit = parseFloat(config.takeProfitPercent);
+  let stopLoss = parseFloat(config.stopLossPercent);
+  if (!Number.isFinite(takeProfit) || takeProfit <= 0) takeProfit = 2;
+  if (!Number.isFinite(stopLoss) || stopLoss <= 0) stopLoss = 1.5;
+  const minTp = Math.max(fee * 4, 0.8);
+  if (takeProfit < minTp) takeProfit = minTp;
+  const maxSl = takeProfit * 0.75;
+  if (stopLoss > maxSl) stopLoss = maxSl;
+  const breakevenArm = Math.max(fee * 3, takeProfit * 0.5);
+  return {
+    takeProfit: parseFloat(takeProfit.toFixed(2)),
+    stopLoss: parseFloat(stopLoss.toFixed(2)),
+    fee: parseFloat(fee.toFixed(3)),
+    breakevenArm: parseFloat(breakevenArm.toFixed(2)),
+  };
+}
+
 function getAssetUsdPrice(asset) {
   if (!asset || asset === "USDT" || asset === "USD") return 1;
   const upper = String(asset).toUpperCase();
@@ -358,6 +393,20 @@ function getNetPnlPercent(avgEntryPrice, closePrice) {
   if (!avgEntryPrice || !closePrice) return null;
   const netExit = closePrice * (1 - getTakerFeeRate());
   return ((netExit - avgEntryPrice) / avgEntryPrice) * 100;
+}
+
+function botEntryPrice(pos) {
+  const qty = parseFloat(pos?.qty) || 0;
+  const cost = parseFloat(pos?.costUsdt) || 0;
+  if (qty > 0 && cost > 0) return cost / qty;
+  return parseFloat(pos?.entryPrice) || 0;
+}
+
+function normalizeEpochMs(value) {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n) || n <= 0) return Date.now();
+  if (n < 1e12) return n * 1000;
+  return n;
 }
 
 function getMinNotional(symbol) {
@@ -446,22 +495,12 @@ function markToMarketBotPositions() {
   return { value, open };
 }
 
+let lastSetupNote = "";
+
 function describeBotWatch() {
-  const need = config.rsiOversold;
-  const rows = Object.keys(marketData)
-    .map((sym) => ({
-      sym,
-      rsi: marketData[sym]?.lastRsi,
-      surge: Boolean(marketData[sym]?.lastVolumeSurge),
-    }))
-    .filter((row) => typeof row.rsi === "number");
-
-  if (!rows.length) return "Watching · RSI not ready yet (need ~15 closed 1m candles)";
-
-  const best = rows.reduce((a, b) => (a.rsi <= b.rsi ? a : b));
-  const rsiTxt = best.rsi.toFixed(1);
-  if (best.rsi <= need) return `Ready ${best.sym} RSI ${rsiTxt} · placing clip`;
-  return `Watching ${best.sym} RSI ${rsiTxt} · need ≤${need}`;
+  if (lastSetupNote) return lastSetupNote;
+  const exits = effectiveExits();
+  return `Flat · 15m pullback inside a 1h uptrend · TP ${exits.takeProfit}% / SL ${exits.stopLoss}%`;
 }
 
 function getBotStatus() {
@@ -503,20 +542,35 @@ function getBotStatus() {
 
 function evaluateBotSellSignal(symbol, closePrice, rsi) {
   const pos = botSession.positions[symbol];
-  if (!pos) return null;
-  const entry = parseFloat(pos.entryPrice) || 0;
+  if (!pos || !closePrice) return null;
+  const entry = botEntryPrice(pos);
   const netPnl = getNetPnlPercent(entry, closePrice);
-  const takeProfit = config.takeProfitPercent || 1.5;
-  const stopLoss = config.stopLossPercent || 2.0;
+  if (isPeggedSymbol(symbol)) return { type: "FLATTEN_PEG", avgEntryPrice: entry, netPnl };
+  if (!entry || netPnl === null) return null;
+  if (!parseFloat(pos.openedAt)) {
+    // A restored clip has no open time. Stamp the session start so a peg that
+    // never moved can still hit the time stop instead of sitting there forever.
+    pos.openedAt = parseFloat(botSession.startedAt) || Date.now() - 13 * 60 * 60 * 1000;
+    persistBotSession();
+  }
 
-  if (entry && netPnl !== null) {
-    if (typeof rsi === "number" && rsi >= config.rsiOverbought && netPnl >= takeProfit) {
-      return { type: "TAKE_PROFIT", avgEntryPrice: entry, netPnl };
-    }
-    if (netPnl <= -stopLoss) {
-      return { type: "STOP_LOSS", avgEntryPrice: entry, netPnl };
-    }
-    return null;
+  const exits = effectiveExits();
+  const prevMax = Number.isFinite(parseFloat(pos.maxNetPnl)) ? parseFloat(pos.maxNetPnl) : -Infinity;
+  pos.maxNetPnl = Math.max(prevMax, netPnl);
+  if (pos.maxNetPnl > prevMax + 0.05) persistBotSession();
+
+  if (netPnl >= exits.takeProfit) return { type: "TAKE_PROFIT", avgEntryPrice: entry, netPnl };
+  if (typeof rsi === "number" && rsi >= config.rsiOverbought && netPnl >= Math.max(exits.fee * 3, 0.4)) {
+    return { type: "TAKE_PROFIT", avgEntryPrice: entry, netPnl };
+  }
+  if (pos.maxNetPnl >= exits.breakevenArm && netPnl <= Math.max(exits.fee, 0.15) && netPnl < pos.maxNetPnl) {
+    return { type: "BREAKEVEN", avgEntryPrice: entry, netPnl };
+  }
+  if (netPnl <= -exits.stopLoss) return { type: "STOP_LOSS", avgEntryPrice: entry, netPnl };
+
+  const openedAt = parseFloat(pos.openedAt) || 0;
+  if (openedAt && Date.now() - openedAt > 12 * 60 * 60 * 1000 && netPnl < exits.fee) {
+    return { type: "TIME_STOP", avgEntryPrice: entry, netPnl };
   }
   return null;
 }
@@ -555,16 +609,14 @@ function maybeSessionPnlAlert() {
 function evaluateSellSignal(symbol, closePrice, rsi) {
   const avgEntryPrice = getAverageEntryPrice(symbol);
   const netPnl = getNetPnlPercent(avgEntryPrice, closePrice);
-  const takeProfit = config.takeProfitPercent || 1.5;
-  const stopLoss = config.stopLossPercent || 2.0;
+  const exits = effectiveExits();
 
   if (avgEntryPrice && netPnl !== null) {
-    if (typeof rsi === "number" && rsi >= config.rsiOverbought && netPnl >= takeProfit) {
+    if (netPnl >= exits.takeProfit) return { type: "TAKE_PROFIT", avgEntryPrice, netPnl };
+    if (typeof rsi === "number" && rsi >= config.rsiOverbought && netPnl >= Math.max(exits.fee * 3, 0.4)) {
       return { type: "TAKE_PROFIT", avgEntryPrice, netPnl };
     }
-    if (netPnl <= -stopLoss) {
-      return { type: "STOP_LOSS", avgEntryPrice, netPnl };
-    }
+    if (netPnl <= -exits.stopLoss) return { type: "STOP_LOSS", avgEntryPrice, netPnl };
     return null;
   }
 
@@ -616,6 +668,24 @@ const BOT_SCAN_MS = 5 * 60 * 1000;
 const BOT_MIN_QUOTE_VOLUME = 3_000_000;
 const LEVERAGE_USDT_RE = /(UP|DOWN|BULL|BEAR)USDT$/;
 const STABLE_USDT_PAIRS = new Set(["USDTUSDT", "USDCUSDT", "BUSDUSDT", "TUSDUSDT", "FDUSDUSDT", "DAIUSDT", "USDPUSDT", "USDEUSDT", "USD1USDT"]);
+const PEGGED_BASES = new Set([
+  "USDT", "USDC", "BUSD", "TUSD", "FDUSD", "DAI", "USDP", "USDE", "USD1", "RLUSD",
+  "PYUSD", "USDD", "FRAX", "LUSD", "GUSD", "USDS", "BFUSD", "XUSD", "USD0", "USDY",
+  "EUR", "EURI", "AEUR", "USDP", "SUSD", "GUSD", "USDJ", "USTC", "UST", "USDN",
+]);
+
+function pairBaseAsset(symbol) {
+  return String(symbol || "").toUpperCase().replace(/(USDT|USDC|FDUSD|BUSD|TUSD|USD)$/, "");
+}
+
+function isPeggedSymbol(symbol) {
+  const sym = String(symbol || "").toUpperCase();
+  if (STABLE_USDT_PAIRS.has(sym)) return true;
+  const base = pairBaseAsset(sym);
+  if (!base || PEGGED_BASES.has(base)) return true;
+  if (/USD$/.test(base) && base.length <= 8) return true;
+  return false;
+}
 
 const marketData = {};
 let binanceKlineWs = null;
@@ -653,7 +723,7 @@ function ensureMarketSlot(symbol, hunt = false) {
 function isTradableUsdtSpot(symbol) {
   const sym = String(symbol || "").toUpperCase();
   if (!sym.endsWith("USDT")) return false;
-  if (LEVERAGE_USDT_RE.test(sym) || STABLE_USDT_PAIRS.has(sym)) return false;
+  if (LEVERAGE_USDT_RE.test(sym) || isPeggedSymbol(sym)) return false;
   return Boolean(symbolLotSizes[sym]);
 }
 
@@ -969,7 +1039,7 @@ function summarizeImportedFills(fills, symbol, side) {
   fills.forEach((fill) => {
     qty += parseFloat(fill.qty || 0);
     quoteQty += parseFloat(fill.quoteQty || 0);
-    if (fill.time) timestamp = Math.min(timestamp, fill.time);
+    if (fill.time) timestamp = Math.min(timestamp, normalizeEpochMs(fill.time));
 
     const commission = parseFloat(fill.commission || 0);
     if (!commission) return;
@@ -1203,7 +1273,7 @@ function normalizeEquityTrades(payload) {
       const quote = parseFloat(row.quoteQty || row.quoteQuantity || row.executedQuoteQty || qty * price || 0);
       const sideRaw = String(row.side || row.orderSide || "").toUpperCase();
       const side = sideRaw === "BUY" || sideRaw === "SELL" ? sideRaw : row.isBuyer === false ? "SELL" : "BUY";
-      const timestamp = parseInt(row.time || row.tradeTime || row.transactTime || row.updateTime || Date.now(), 10);
+      const timestamp = normalizeEpochMs(row.time || row.tradeTime || row.transactTime || row.updateTime || Date.now());
       if (!symbol || !orderId) return null;
       const base = symbol.replace(/USDT$|USD$|USDC$/, "");
       if (base) binanceStockAssets.add(base);
@@ -1418,11 +1488,11 @@ async function buildHoldingsList() {
 
 async function syncAllTradeHistory() {
   const [spot, equity] = await Promise.all([syncBinanceTradeHistory(), fetchBinanceEquityTrades()]);
-  persistImportedTrades(equity);
+  const equityImported = persistImportedTrades(equity);
   const trades = [...spot.trades, ...equity].sort((a, b) => b.timestamp - a.timestamp);
   return {
     trades,
-    imported: spot.imported,
+    imported: spot.imported + equityImported,
     symbols: spot.symbols,
   };
 }
@@ -1646,6 +1716,10 @@ async function placeMarketOrder({ symbol, side, usdtAmount, quantity, sellAll = 
   if (!apiKey || !secretKey) return { success: false, error: "Missing API keys." };
 
   const symUpper = String(symbol || "").toUpperCase();
+  const sideUpperEarly = String(side || "").toUpperCase();
+  if (source === "bot" && sideUpperEarly === "BUY" && isPeggedSymbol(symUpper)) {
+    return { success: false, error: `${symUpper} is pegged to the dollar. Autopilot will not buy it.` };
+  }
   if (isBinanceStockTradeSymbol(symUpper)) {
     return placeEquityMarketOrder({
       ticker: stockTickerFromAsset(symUpper),
@@ -1802,6 +1876,8 @@ async function botMaybeBuy(symbol, closePrice, rsi) {
       costUsdt: result.executedUsdt,
       entryPrice: result.executedPrice,
       orderId: result.orderId,
+      openedAt: Date.now(),
+      maxNetPnl: 0,
     };
     botSession.lastAction = `BOUGHT ${result.symbol} $${result.executedUsdt.toFixed(2)}`;
     persistBotSession();
@@ -1851,7 +1927,18 @@ async function botMaybeSell(symbol, reason, rsi, { force = false } = {}) {
     const alertId = recordStrategyAlert({
       symbol,
       action: "SELL",
-      signalType: reason === "STOP_LOSS" ? "BOT_STOP_LOSS" : reason === "TAKE_PROFIT" ? "BOT_TAKE_PROFIT" : "BOT_SELL",
+      signalType:
+        reason === "STOP_LOSS"
+          ? "BOT_STOP_LOSS"
+          : reason === "TAKE_PROFIT"
+            ? "BOT_TAKE_PROFIT"
+            : reason === "BREAKEVEN"
+              ? "BOT_BREAKEVEN"
+              : reason === "TIME_STOP"
+                ? "BOT_TIME_STOP"
+                : reason === "FLATTEN_PEG"
+                  ? "BOT_FLATTEN"
+                  : "BOT_SELL",
       price: result.executedPrice,
       rsi,
     });
@@ -1937,12 +2024,12 @@ async function startBotSession({ budgetUsdt, alertProfitPercent, alertLossPercen
     startingEquity: allocation,
     cashUsdt: allocation,
     lastAction: carry
-      ? `Armed · carrying $${allocation.toFixed(2)} USDT from prior Autopilot sessions · watching RSI ≤ ${config.rsiOversold}`
-      : `Armed · $${allocation.toFixed(2)} USDT · watching RSI ≤ ${config.rsiOversold}`,
+      ? `Armed · carrying $${allocation.toFixed(2)} USDT · waiting for a 15m pullback in a 1h uptrend`
+      : `Armed · $${allocation.toFixed(2)} USDT · waiting for a 15m pullback in a 1h uptrend`,
   };
   persistBotSession();
   console.log(
-    `[AUTOPILOT] ON · capital $${allocation.toFixed(2)}${carry ? " (carried)" : ""} · clip $${Number(config.tradeAmountUsdt).toFixed(2)} · buy when RSI ≤ ${config.rsiOversold} · TP ${config.takeProfitPercent}% / SL ${config.stopLossPercent}%`,
+    `[AUTOPILOT] ON · capital $${allocation.toFixed(2)}${carry ? " (carried)" : ""} · clip $${Number(config.tradeAmountUsdt).toFixed(2)} · 15m pullback in a 1h uptrend · TP ${effectiveExits().takeProfit}% / SL ${effectiveExits().stopLoss}%`,
   );
   sendTelegramAlert(
     `🤖 <b>AUTOPILOT ON</b>\n\n` +
@@ -1950,7 +2037,7 @@ async function startBotSession({ budgetUsdt, alertProfitPercent, alertLossPercen
       `<b>Clip size:</b> $${Number(config.tradeAmountUsdt).toFixed(2)} (strategy default)\n` +
       `<b>Alerts:</b> +${alertProfitPercent}% / −${alertLossPercent}% session P/L\n` +
       `<b>Pairs:</b> monitored + top ${BOT_UNIVERSE_SIZE} USDT by 24h volume\n` +
-      `<b>Exits:</b> fee-aware TP ${config.takeProfitPercent}% / SL ${config.stopLossPercent}%`,
+      `<b>Exits:</b> TP ${effectiveExits().takeProfit}% on price (stop capped at ${effectiveExits().stopLoss}%). Pegged coins are sold back to USDT.`,
   );
   void scanAutopilotUniverse().catch((err) => console.error("[AUTOPILOT] scan", err.message));
   return { success: true, resumed: false, status: getBotStatus() };
@@ -2036,8 +2123,59 @@ function applyKlineBootstrap(symbol, klines) {
   return target;
 }
 
-async function fetchKlines(symbol, limit = 50) {
-  const res = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${String(symbol).toUpperCase()}&interval=${INTERVAL}&limit=${limit}`);
+function klineCloses(klines) {
+  return (klines || []).map((k) => parseFloat(k[4])).filter(Number.isFinite);
+}
+
+function klineVolumes(klines) {
+  return (klines || []).map((k) => parseFloat(k[5])).filter(Number.isFinite);
+}
+
+function rangePctFromCloses(closes) {
+  if (!closes.length) return 0;
+  const high = Math.max(...closes);
+  const low = Math.min(...closes);
+  const last = closes[closes.length - 1];
+  if (!(last > 0) || high < low) return 0;
+  return ((high - low) / last) * 100;
+}
+
+function dayRangePercent(ticker) {
+  const high = parseFloat(ticker.highPrice);
+  const low = parseFloat(ticker.lowPrice);
+  const last = parseFloat(ticker.lastPrice) || (high > 0 && low > 0 ? (high + low) / 2 : 0);
+  if (!(high > 0 && low > 0 && last > 0) || high < low) return 0;
+  return ((high - low) / last) * 100;
+}
+
+function assessMomentumPullback(klines15, klines1h) {
+  const closes15 = klineCloses(klines15);
+  const vols15 = klineVolumes(klines15);
+  const closes1h = klineCloses(klines1h);
+  if (closes15.length < 20 || closes1h.length < 24 || vols15.length < 20) return null;
+  const rsiVals = RSI.calculate({ values: closes15, period: 14 });
+  if (!rsiVals || rsiVals.length < 2) return null;
+  const rsi = rsiVals[rsiVals.length - 1];
+  const prevRsi = rsiVals[rsiVals.length - 2];
+  const smaVals = SMA.calculate({ values: closes1h, period: 24 });
+  const trend = smaVals[smaVals.length - 1];
+  const last = closes1h[closes1h.length - 1];
+  const volSma = SMA.calculate({ values: vols15, period: 20 });
+  const avgVol = volSma[volSma.length - 1];
+  const lastVol = vols15[vols15.length - 1];
+  if (!(trend > 0 && avgVol > 0 && last > 0)) return null;
+  const uptrend = last > trend;
+  const turningUp = rsi <= config.rsiOversold && rsi > prevRsi && prevRsi <= config.rsiOversold + 8;
+  const surge = lastVol > avgVol * config.volumeSurgeMultiplier;
+  const rangeOk = rangePctFromCloses(closes1h) >= effectiveExits().takeProfit;
+  if (!(uptrend && turningUp && surge && rangeOk)) return null;
+  return { rsi, prevRsi, price: last, trendStrength: last / trend - 1 };
+}
+
+async function fetchKlines(symbol, limit = 50, interval = INTERVAL) {
+  const res = await fetch(
+    `https://data-api.binance.vision/api/v3/klines?symbol=${String(symbol).toUpperCase()}&interval=${interval}&limit=${limit}`,
+  );
   const klines = await res.json();
   return Array.isArray(klines) ? klines : [];
 }
@@ -2062,8 +2200,9 @@ async function pickHottestUsdtSymbols(limit = BOT_UNIVERSE_SIZE) {
     return [];
   }
 
+  const minRange = effectiveExits().takeProfit;
   return tickers
-    .filter((t) => isTradableUsdtSpot(t.symbol) && parseFloat(t.quoteVolume) >= BOT_MIN_QUOTE_VOLUME)
+    .filter((t) => isTradableUsdtSpot(t.symbol) && parseFloat(t.quoteVolume) >= BOT_MIN_QUOTE_VOLUME && dayRangePercent(t) >= minRange)
     .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
     .slice(0, limit)
     .map((t) => ({
@@ -2073,50 +2212,103 @@ async function pickHottestUsdtSymbols(limit = BOT_UNIVERSE_SIZE) {
     }));
 }
 
-async function scanAutopilotUniverse() {
+async function flattenPeggedBotPositions() {
   if (!botSession.enabled) return;
+  for (const symbol of Object.keys(botSession.positions || {})) {
+    if (!isPeggedSymbol(symbol)) continue;
+    console.log(`[AUTOPILOT] ${symbol} is pegged — selling back to USDT`);
+    await botMaybeSell(symbol, "FLATTEN_PEG", null);
+  }
+}
+
+async function scanAutopilotUniverse() {
   try {
-    const hottest = await pickHottestUsdtSymbols();
-    if (!hottest.length) {
-      console.warn("[AUTOPILOT] universe scan found no liquid USDT pairs");
+    await flattenPeggedBotPositions();
+    if (botSession.enabled && botOpenPositionCount() > 0) return;
+    const exits = effectiveExits();
+    const hottest = botSession.enabled ? await pickHottestUsdtSymbols(12) : [];
+    const dashboard = SYMBOLS.map((s) => s.toUpperCase()).filter((s) => isTradableUsdtSpot(s));
+    const seen = new Set();
+    const universe = [];
+    for (const symbol of [...dashboard, ...hottest.map((row) => row.symbol)]) {
+      if (seen.has(symbol) || isPeggedSymbol(symbol)) continue;
+      seen.add(symbol);
+      universe.push(symbol);
+    }
+    if (!universe.length) {
+      lastSetupNote = `Flat · no liquid non-peg pairs · TP ${exits.takeProfit}% / SL ${exits.stopLoss}%`;
       return;
     }
 
-    const scored = [];
-    for (let i = 0; i < hottest.length; i += 5) {
-      const batch = hottest.slice(i, i + 5);
+    const ready = [];
+    for (let i = 0; i < universe.length; i += 4) {
+      const batch = universe.slice(i, i + 4);
       const part = await Promise.all(
-        batch.map(async (row) => {
+        batch.map(async (symbol) => {
           try {
-            const hunt = !isDashboardSymbol(row.symbol);
-            ensureMarketSlot(row.symbol, hunt);
-            if (hunt) botHuntSymbols.add(row.symbol);
-            const klines = await fetchKlines(row.symbol);
-            if (klines.length >= 15) applyKlineBootstrap(row.symbol, klines);
-            subscribeKline(row.symbol);
-            const rsi = marketData[row.symbol]?.lastRsi;
-            return { ...row, rsi: typeof rsi === "number" ? rsi : null };
+            const hunt = !isDashboardSymbol(symbol);
+            ensureMarketSlot(symbol, hunt);
+            if (hunt) botHuntSymbols.add(symbol);
+            const [k15, k1h] = await Promise.all([fetchKlines(symbol, 40, "15m"), fetchKlines(symbol, 48, "1h")]);
+            subscribeKline(symbol);
+            const setup = assessMomentumPullback(k15, k1h);
+            return setup ? { symbol, ...setup, dashboard: !hunt } : null;
           } catch (err) {
-            console.warn(`[AUTOPILOT] scan ${row.symbol} failed:`, err.message);
-            return { ...row, rsi: null };
+            console.warn(`[AUTOPILOT] scan ${symbol} failed:`, err.message);
+            return null;
           }
         }),
       );
-      scored.push(...part);
+      ready.push(...part.filter(Boolean));
     }
 
-    const ranked = scored.filter((row) => typeof row.rsi === "number").sort((a, b) => a.rsi - b.rsi);
-    const preview = ranked
-      .slice(0, 5)
-      .map((row) => `${row.symbol} ${row.rsi.toFixed(1)}`)
+    ready.sort((a, b) => b.dashboard - a.dashboard || b.trendStrength - a.trendStrength);
+    const preview = ready
+      .slice(0, 3)
+      .map((row) => `${row.symbol} RSI ${row.rsi.toFixed(1)}`)
       .join(", ");
-    console.log(`[AUTOPILOT] universe ${ranked.length} pairs · lowest RSI: ${preview || "n/a"}`);
+    console.log(`[AUTOPILOT] setups ${ready.length}/${universe.length} · ${preview || "none"} · TP ${exits.takeProfit}% / SL ${exits.stopLoss}%`);
+    lastSetupNote = ready.length
+      ? `Ready ${ready[0].symbol} 15m RSI ${ready[0].rsi.toFixed(1)} rising · 1h uptrend`
+      : `Flat · no 15m pullback in a 1h uptrend · TP ${exits.takeProfit}% / SL ${exits.stopLoss}%`;
 
-    const buy = ranked.find((row) => row.rsi <= config.rsiOversold);
-    if (buy && botOpenPositionCount() === 0) {
-      const price = marketData[buy.symbol]?.prices.slice(-1)[0] || 0;
-      console.log(`[AUTOPILOT] BUY trigger ${buy.symbol} RSI ${buy.rsi.toFixed(2)} ≤ ${config.rsiOversold} (universe scan)`);
-      await botMaybeBuy(buy.symbol, price, buy.rsi);
+    const now = Date.now();
+    const cooldownMs = config.cooldownMinutes * 60 * 1000;
+    if (botSession.enabled && botOpenPositionCount() === 0) {
+      const buy = ready.find((row) => now - (marketData[row.symbol]?.lastSignalTime || 0) > cooldownMs);
+      if (buy) {
+        console.log(`[AUTOPILOT] BUY ${buy.symbol} 15m RSI ${buy.rsi.toFixed(2)} turning up, price above the 24h average`);
+        marketData[buy.symbol].lastSignalTime = now;
+        await botMaybeBuy(buy.symbol, buy.price, buy.rsi);
+      }
+      return;
+    }
+
+    if (!botSession.enabled) {
+      const usdtBalance = availableBalances.USDT || 0;
+      if (usdtBalance + 1e-8 >= config.tradeAmountUsdt) {
+        for (const row of ready) {
+          if (!isDashboardSymbol(row.symbol)) continue;
+          const slot = marketData[row.symbol];
+          if (!slot || slot.setupArmed || now - slot.lastSignalTime <= cooldownMs) continue;
+          slot.setupArmed = true;
+          slot.lastSignalTime = now;
+          recordStrategyAlert({ symbol: row.symbol, action: "BUY", signalType: "BUY", price: row.price, rsi: row.rsi });
+          sendChannelTelegram(
+            "crypto",
+            `⚡ <b>BUY SIGNAL (${row.symbol})</b>\n\n` +
+              `<b>15m RSI:</b> ${row.rsi.toFixed(2)} and turning up\n` +
+              `<b>Trend:</b> 1h close is above the 24-hour average\n` +
+              `<b>Price:</b> $${row.price}\n` +
+              `<b>Cash:</b> $${usdtBalance.toFixed(2)} USDT`,
+          );
+        }
+      }
+    }
+
+    for (const symbol of universe) {
+      if (ready.some((row) => row.symbol === symbol)) continue;
+      if (marketData[symbol]) marketData[symbol].setupArmed = false;
     }
   } catch (err) {
     console.error("[AUTOPILOT] universe scan error:", err.message);
@@ -2154,6 +2346,16 @@ function applyStockBars(symbol, bars) {
   return prices.length;
 }
 
+function quoteRangePercent(prices) {
+  const window = (prices || []).slice(-20).filter((price) => Number.isFinite(price) && price > 0);
+  if (window.length < 8) return null;
+  const high = Math.max(...window);
+  const low = Math.min(...window);
+  const last = window[window.length - 1];
+  if (!(last > 0)) return null;
+  return ((high - low) / last) * 100;
+}
+
 function evaluateStockSignals(symbol, closePrice, volume) {
   const target = stockMarketData[symbol];
   if (!target || !Number.isFinite(closePrice)) return;
@@ -2167,6 +2369,8 @@ function evaluateStockSignals(symbol, closePrice, volume) {
     }
   }
   if (rsi === null || rsi === undefined) return;
+  const prevRsi = target.prevRsi;
+  target.prevRsi = rsi;
 
   let isVolumeSurge = false;
   if (Number.isFinite(volume) && target.volumes.length >= 20) {
@@ -2185,16 +2389,27 @@ function evaluateStockSignals(symbol, closePrice, volume) {
   const heldQty = getHeldStockQty(symbol);
   const heldUsd = heldQty * closePrice;
   const haveVolume = Number.isFinite(volume) && target.volumes.length >= 20;
+  const range = quoteRangePercent(target.prices);
+  // A frozen quote (weekend, halted tape) makes RSI pin at 100 and look overbought.
+  if (range !== null && range < 0.02) return;
   if (!(heldUsd >= 5)) {
-    if (rsi <= config.rsiOversold && (!haveVolume || isVolumeSurge)) {
+    const crossed = typeof prevRsi === "number" && prevRsi > config.rsiOversold && rsi <= config.rsiOversold;
+    let uptrend = false;
+    if (target.prices.length >= 20) {
+      const smaVals = SMA.calculate({ values: target.prices, period: 20 });
+      const ma = smaVals[smaVals.length - 1];
+      uptrend = Boolean(ma && closePrice > ma);
+    }
+    if (crossed && uptrend && (!haveVolume || isVolumeSurge)) {
       target.lastSignalTime = now;
       target.lastSignal = "BUY";
       recordStrategyAlert({ symbol, action: "BUY", signalType: "STOCK_BUY", price: closePrice, rsi, source: "stocks" });
       sendChannelTelegram(
         "stocks",
-        `📈 <b>STOCK BUY (${symbol})</b>\n\n` +
-          `<b>RSI:</b> ${rsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` +
-          `<b>Action:</b> You do not hold this on Binance — BUY on the terminal.`,
+        `📈 <b>STOCK PULLBACK (${symbol})</b>\n\n` +
+          `<b>RSI:</b> ${rsi.toFixed(2)} just crossed ${config.rsiOversold}, and price is above its 20-minute average.\n` +
+          `<b>Price:</b> $${closePrice}\n` +
+          `<b>Action:</b> One clip only. Ignore this if you already hold a full position.`,
       );
     }
     return;
@@ -2204,7 +2419,7 @@ function evaluateStockSignals(symbol, closePrice, volume) {
   if (!sellSignal) {
     if (target.lastStopLossPnl !== null) {
       const netPnl = getNetPnlPercent(getAverageEntryPrice(symbol), closePrice);
-      if (netPnl === null || netPnl > -(config.stopLossPercent || 2.0)) target.lastStopLossPnl = null;
+      if (netPnl === null || netPnl > -effectiveExits().stopLoss) target.lastStopLossPnl = null;
     }
     return;
   }
@@ -2246,6 +2461,8 @@ function evaluateStockSignals(symbol, closePrice, volume) {
   }
 
   if (sellSignal.type === "SELL") {
+    const crossedUp = typeof prevRsi === "number" && prevRsi < config.rsiOverbought && rsi >= config.rsiOverbought && rsi < 99.5;
+    if (!crossedUp) return;
     target.lastSignalTime = now;
     target.lastSignal = "SELL";
     recordStrategyAlert({ symbol, action: "SELL", signalType: "STOCK_SELL", price: closePrice, rsi, source: "stocks" });
@@ -2433,7 +2650,6 @@ function connectMultiStreamWS() {
 
         const now = Date.now();
         const cooldownMs = config.cooldownMinutes * 60 * 1000;
-        const botFlat = botOpenPositionCount() === 0;
         const cooledDown = now - target.lastSignalTime > cooldownMs;
 
         if (
@@ -2446,35 +2662,22 @@ function connectMultiStreamWS() {
           );
         }
 
-        if (botSession.enabled && botSession.positions[sym] && target.lastRsi !== null) {
+        if (botSession.enabled && botSession.positions[sym]) {
           const botSell = evaluateBotSellSignal(sym, closePrice, target.lastRsi);
-          if (botSell?.type === "TAKE_PROFIT" || botSell?.type === "STOP_LOSS") {
+          const botExits = new Set(["TAKE_PROFIT", "STOP_LOSS", "BREAKEVEN", "TIME_STOP", "FLATTEN_PEG"]);
+          if (botExits.has(botSell?.type)) {
             void botMaybeSell(sym, botSell.type, target.lastRsi).catch((err) => console.error("[AUTOPILOT SELL]", err.message));
             target.lastSignalTime = now;
             target.lastStopLossPnl = botSell.type === "STOP_LOSS" ? botSell.netPnl : null;
           }
         }
 
-        if (botSession.enabled && botFlat && cooledDown && target.lastRsi !== null && target.lastRsi <= config.rsiOversold) {
-          console.log(`[AUTOPILOT] BUY trigger ${sym} RSI ${target.lastRsi.toFixed(2)} ≤ ${config.rsiOversold}`);
-          void botMaybeBuy(sym, closePrice, target.lastRsi).catch((err) => console.error("[AUTOPILOT BUY]", err.message));
-          target.lastSignalTime = now;
-        }
-
         if (target.lastRsi !== null && cooledDown) {
           const baseAsset = sym.replace("USDT", "");
           const currentAssetBalance = availableBalances[baseAsset] || 0;
           const currentAssetUsdVal = currentAssetBalance * closePrice;
-          const usdtBalance = availableBalances["USDT"] || 0;
 
-          if (!botSession.enabled && target.lastRsi <= config.rsiOversold && isVolumeSurge && usdtBalance >= config.tradeAmountUsdt) {
-            recordStrategyAlert({ symbol: sym, action: "BUY", signalType: "BUY", price: closePrice, rsi: target.lastRsi });
-            sendChannelTelegram(
-              "crypto",
-              `⚡ <b>BUY SIGNAL (${sym})</b>\n\n` + `<b>RSI:</b> ${target.lastRsi.toFixed(2)} | <b>Price:</b> $${closePrice}\n` + `<b>Available Cash:</b> $${usdtBalance.toFixed(2)} USDT`,
-            );
-            target.lastSignalTime = now;
-          } else if (currentAssetUsdVal >= 5.0 && !botSession.positions[sym]) {
+          if (currentAssetUsdVal >= 5.0 && !botSession.positions[sym]) {
             const sellSignal = evaluateSellSignal(sym, closePrice, target.lastRsi);
 
             if (sellSignal?.type === "TAKE_PROFIT") {
@@ -2504,7 +2707,7 @@ function connectMultiStreamWS() {
                 target.lastSignalTime = now;
                 target.lastStopLossPnl = sellSignal.netPnl;
               }
-            } else if (target.lastStopLossPnl !== null && (sellSignal === null || sellSignal.netPnl > -(config.stopLossPercent || 2.0))) {
+            } else if (target.lastStopLossPnl !== null && (sellSignal === null || sellSignal.netPnl > -effectiveExits().stopLoss)) {
               target.lastStopLossPnl = null;
             }
           }
@@ -2753,6 +2956,12 @@ app.get("/api/trades", async (req, res) => {
   }
 });
 
+function canonicalPnlSymbol(symbol) {
+  const upper = String(symbol || "").toUpperCase();
+  if (isBinanceStockTradeSymbol(upper)) return stockTickerFromAsset(upper);
+  return upper;
+}
+
 app.get("/api/pnl", (req, res) => {
   const timeframe = req.query.tf || "all";
   let timeFilter = 0;
@@ -2779,7 +2988,8 @@ app.get("/api/pnl", (req, res) => {
     let tradeCount = 0;
 
     trades.forEach((t) => {
-      const sym = t.symbol.toUpperCase();
+      const sym = canonicalPnlSymbol(t.symbol);
+      t.timestamp = normalizeEpochMs(t.timestamp);
       if (!assetPnL[sym]) {
         assetPnL[sym] = { symbol: sym, buyQty: 0, buyCost: 0, realizedPnl: 0, tradeCount: 0 };
       }
@@ -2859,7 +3069,7 @@ app.use(express.static("public"));
     if (botSession.enabled) maybeSessionPnlAlert();
   }, 30000);
   setInterval(() => {
-    if (botSession.enabled) void scanAutopilotUniverse().catch((err) => console.error("[AUTOPILOT] scan", err.message));
+    void scanAutopilotUniverse().catch((err) => console.error("[AUTOPILOT] scan", err.message));
   }, BOT_SCAN_MS);
   await bootstrapHistoricalData();
   await bootstrapBinanceStocks();
@@ -2868,11 +3078,9 @@ app.use(express.static("public"));
   setInterval(() => {
     void pollBinanceStockQuotes().catch((err) => console.warn("[BINANCE STOCKS]", err.message));
   }, 15000);
-  if (botSession.enabled) {
-    setTimeout(() => {
-      void scanAutopilotUniverse().catch((err) => console.error("[AUTOPILOT] scan", err.message));
-    }, 4000);
-  }
+  setTimeout(() => {
+    void scanAutopilotUniverse().catch((err) => console.error("[AUTOPILOT] scan", err.message));
+  }, 8000);
 
   app.listen(PORT, async () => {
     console.log(`Terminal running on http://localhost:${PORT}`);

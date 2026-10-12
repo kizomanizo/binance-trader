@@ -832,7 +832,7 @@
     <div class="container">
       <header>
         <h1>Binance Micro-Trader Terminal</h1>
-        <p class="subtitle">Live 1-Minute Momentum & Portfolio Engine · Crypto + US Stocks</p>
+        <p class="subtitle">15-minute pullbacks in a 1-hour uptrend · Crypto + US Stocks</p>
 
         <div class="override-bar">
           <button id="unlock-btn" onclick="toggleManualUnlock()" class="override-btn">🔓 Unlock Impulse Trade Controls</button>
@@ -891,7 +891,7 @@
       <div class="section-heading">
         <div>
           <div class="section-title">Crypto · Binance Spot</div>
-          <div class="section-sub">1-minute RSI & volume-surge signals with in-app execution</div>
+          <div class="section-sub">Charts stay 1-minute. Buy alerts fire on a 15-minute RSI turn-up while the 1-hour trend is up.</div>
         </div>
       </div>
       <div class="grid" id="market-grid"></div>
@@ -1008,18 +1008,19 @@
         <div class="form-group">
           <label>Take Profit (%)</label>
           <input type="number" id="cfg-takeProfit" step="0.1" min="0.1" placeholder="1.5" />
-          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">Round-trip Binance fees are ~0.2% (~0.15% with BNB). Keep this above that floor.</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">Fills on price. Round-trip fees are about 0.20% (0.15% with BNB). Keep this several times that.</div>
         </div>
 
         <div class="form-group">
           <label>Stop Loss (%)</label>
-          <input type="number" id="cfg-stopLoss" step="0.1" min="0.1" placeholder="2.0" />
+          <input type="number" id="cfg-stopLoss" step="0.1" min="0.1" placeholder="1.5" />
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">Must stay below take-profit. A wider stop is capped so one loss cannot erase one win.</div>
         </div>
 
         <div class="form-group">
           <label>Taker Fee (%)</label>
           <input type="number" id="cfg-takerFee" step="0.025" min="0" placeholder="0.1" />
-          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">0.1 standard, 0.075 with BNB fee discount. Used to keep SALE alerts net of fees.</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">One-way fee. Binance spot is 0.10, or 0.075 when BNB pays the fee. 0.15 makes the target harder than your real cost.</div>
         </div>
 
         <div style="font-weight: 700; color: var(--accent-yellow); margin: 1.1rem 0 0.75rem">🤖 Autopilot defaults</div>
@@ -1118,7 +1119,7 @@
         <form autocomplete="off" onsubmit="event.preventDefault();">
         <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-yellow); margin-bottom: 0.4rem">🤖 Autopilot</div>
         <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 1rem">
-          Trades the monitored Spot pairs on 1-minute RSI + volume surge. One clip at a time, fee-aware TP/SL, budget isolated from the rest of your wallet.
+          Buys a 15-minute RSI pullback only while price is above its 24-hour average, with a volume surge. One clip. Pegged coins such as RLUSD are sold back to USDT. Take-profit fills on price. The stop is kept inside the target.
         </div>
 
         <div class="bot-status-grid">
@@ -1581,6 +1582,9 @@
         if (alert.signalType === "BOT_BUY") return "🤖 AUTOPILOT BUY";
         if (alert.signalType === "BOT_TAKE_PROFIT") return "🤖 AUTOPILOT TP";
         if (alert.signalType === "BOT_STOP_LOSS") return "🤖 AUTOPILOT SL";
+        if (alert.signalType === "BOT_BREAKEVEN") return "🤖 AUTOPILOT BREAKEVEN";
+        if (alert.signalType === "BOT_TIME_STOP") return "🤖 AUTOPILOT TIME STOP";
+        if (alert.signalType === "BOT_FLATTEN") return "🤖 AUTOPILOT FLATTEN";
         if (alert.signalType === "BOT_SELL") return "🤖 AUTOPILOT SELL";
         if (alert.action === "BUY") return "⚡ BUY SIGNAL";
         if (alert.signalType === "TAKE_PROFIT") return "🎯 TAKE PROFIT";
