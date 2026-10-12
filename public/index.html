@@ -905,7 +905,7 @@
         <div style="font-weight: 700; margin-bottom: 1rem">⚡ Recent Strategy Alerts</div>
         <div id="logs-list">
           <div class="empty-logs" style="color: var(--text-muted); font-size: 0.85rem; font-style: italic">
-            Listening for triggers... Crypto BUY when USDT ≥ $<span id="empty-buy-threshold">5.50</span>. SELL when you hold ≥ $5. Stocks: BUY when you do not hold, SELL when you do.
+            Listening for triggers... Crypto BUY when USDT or USDC covers $<span id="empty-buy-threshold">5.50</span>. No buy if neither does. SELL when you hold ≥ $5. Stocks: BUY when you do not hold, SELL when you do.
           </div>
         </div>
         <div class="logs-pager" id="logs-pager" style="display: none">
@@ -1124,7 +1124,7 @@
 
         <div class="bot-status-grid">
           <div><span>Status</span><b id="bot-modal-state">OFF</b></div>
-          <div><span>Wallet USDT</span><b id="bot-modal-wallet">$0.00</b></div>
+          <div><span>USDT / USDC</span><b id="bot-modal-wallet">$0.00 / $0.00</b></div>
           <div><span>Session P/L</span><b id="bot-modal-pnl">$0.00</b></div>
           <div><span>Lifetime P/L</span><b id="bot-modal-lifetime">$0.00</b></div>
           <div><span>Bot capital</span><b id="bot-modal-equity">$0.00</b></div>
@@ -1137,7 +1137,7 @@
           <label>USDT to auto-trade</label>
           <input type="number" id="bot-budget-input" min="5" max="200" step="0.5" placeholder="20" />
           <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem" id="bot-budget-note">
-            Must be sitting in Spot USDT. Each clip uses the strategy default trade amount. Next start continues parked Autopilot cash, including prior session P/L.
+            A clip is paid in USDT, or in USDC when USDT is short. Neither a suggestion nor an order is sent unless one of them covers the clip. Next start continues parked Autopilot cash, including prior session P/L.
           </div>
         </div>
         <div class="form-group">
@@ -1180,6 +1180,7 @@
       let lastAlertsFingerprint = "";
       let tradeOutcomes = [];
       let tradeAmountUsdt = 5.5;
+      let lastStable = { usdt: 0, usdc: 0 };
       let lastStrategyConfig = { rsiOversold: 32, rsiOverbought: 70 };
       const lastStockPrices = {};
       let lastBotStatus = { enabled: false, lastAction: "Idle" };
@@ -1265,7 +1266,7 @@
           if (el) el.textContent = text;
         };
         setText("bot-modal-state", on ? "ON" : "OFF");
-        setText("bot-modal-wallet", money(data.usdtWallet));
+        setText("bot-modal-wallet", `${money(data.usdtWallet)} / ${money(data.usdcWallet)}`);
         setText("bot-modal-pnl", `${signedMoney(data.pnl)} (${(parseFloat(data.pnlPercent) || 0).toFixed(2)}%)`);
         setText("bot-modal-lifetime", signedMoney(data.lifetimePnl));
         setText("bot-modal-equity", money(data.equity));
@@ -1755,7 +1756,7 @@
         if (pageAlerts.length === 0) {
           logsList.innerHTML = `
           <div class="empty-logs" style="color:var(--text-muted); font-size:0.85rem; font-style:italic;">
-            Listening for triggers... Crypto BUY when USDT ≥ $${formatTradeAmount()}. SELL when you hold ≥ $5. Stocks: BUY when you do not hold, SELL when you do.
+            Listening for triggers... Crypto BUY when USDT or USDC covers $${formatTradeAmount()}. No buy if neither does. SELL when you hold ≥ $5. Stocks: BUY when you do not hold, SELL when you do.
           </div>
         `;
           pager.style.display = "none";
@@ -2121,6 +2122,10 @@
               renderAlertPage(currentAlertPage);
             }
           }
+          lastStable = {
+            usdt: Number(data.usdtSpendable) || 0,
+            usdc: Number(data.usdcSpendable) || 0,
+          };
 
           data.markets.forEach((m) => {
             if (m.history && charts[m.symbol]) {
@@ -2193,6 +2198,17 @@
 
         const defaultBuyAmount = amount ?? tradeAmountUsdt;
         const isStock = !/USDT$/.test(String(symbol || "").toUpperCase());
+        const usdtCovers = lastStable.usdt + 1e-8 >= defaultBuyAmount;
+        const usdcCovers = lastStable.usdc + 1e-8 >= defaultBuyAmount;
+        if (!isSell && !sellAll && !isStock && !usdtCovers && !usdcCovers) {
+          showToast(
+            "Not enough USDT or USDC",
+            `Need $${formatTradeAmount(defaultBuyAmount)}. You have $${lastStable.usdt.toFixed(2)} USDT and $${lastStable.usdc.toFixed(2)} USDC.`,
+            "error",
+          );
+          return;
+        }
+        const payWith = usdtCovers ? "USDT" : "USDC";
         const confirmMessage =
           isSell || sellAll
             ? isStock
@@ -2200,13 +2216,21 @@
               : `Execute MARKET SELL for ${symbol.toUpperCase()}? Leave quantity empty to clear the full free balance (leftover dust is converted to BNB).`
             : isStock
               ? `Execute a Binance stock MARKET BUY for ${symbol.toUpperCase()}? Default size is $${formatTradeAmount(defaultBuyAmount)}. Stocks settle in USDC; Spot USDT is converted first if needed.`
-              : `Execute a MARKET BUY for ${symbol.toUpperCase()}? Default size is $${formatTradeAmount(defaultBuyAmount)} USDT — change it below for this trade only.`;
+              : `Execute a MARKET BUY for ${symbol.toUpperCase()}? Size is $${formatTradeAmount(defaultBuyAmount)}, paid in ${payWith}${payWith === "USDC" ? " because USDT is short" : ""}. USDT $${lastStable.usdt.toFixed(2)} · USDC $${lastStable.usdc.toFixed(2)}.`;
 
         const confirmation = await showConfirmationWithPassword(confirmTitle, confirmMessage, isSell || sellAll ? { type: "sell" } : { type: "buy", defaultAmount: defaultBuyAmount });
         if (!confirmation?.password) return;
 
         const password = confirmation.password;
         const buyAmount = confirmation.amount ?? defaultBuyAmount;
+        if (!isSell && !sellAll && !isStock && lastStable.usdt + 1e-8 < buyAmount && lastStable.usdc + 1e-8 < buyAmount) {
+          showToast(
+            "Not enough USDT or USDC",
+            `Need $${formatTradeAmount(buyAmount)}. You have $${lastStable.usdt.toFixed(2)} USDT and $${lastStable.usdc.toFixed(2)} USDC.`,
+            "error",
+          );
+          return;
+        }
         const shouldSellAll = isSell && confirmation.sellAll !== false;
         const sellQty = confirmation.sellQty || null;
 

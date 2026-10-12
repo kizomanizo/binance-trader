@@ -15,7 +15,8 @@ const DB_PATH = process.env.DB_PATH || path.join(__dirname, "trades.db");
 let db;
 
 // Memory store for user's active Binance spot balances & lot size rules
-const availableBalances = { USDT: 0 };
+const availableBalances = { USDT: 0, USDC: 0 };
+const fundingFreeCache = { USDT: 0, USDC: 0 };
 const lockedBalances = {};
 const symbolLotSizes = {}; // Stores stepSize precision for each symbol
 const tickerPriceCache = {};
@@ -530,7 +531,8 @@ function getBotStatus() {
     positions: mt.open,
     alertProfitPercent: botSession.alertProfitPercent,
     alertLossPercent: botSession.alertLossPercent,
-    usdtWallet: parseFloat((availableBalances.USDT || 0).toFixed(2)),
+    usdtWallet: parseFloat(stableSpendable("USDT").total.toFixed(2)),
+    usdcWallet: parseFloat(stableSpendable("USDC").total.toFixed(2)),
     defaults: { ...botConfig },
     clipUsdt: config.tradeAmountUsdt,
     bankroll: {
@@ -627,7 +629,7 @@ function evaluateSellSignal(symbol, closePrice, rsi) {
 }
 
 function summarizeOrderFills(result, symbol, side) {
-  const baseAsset = symbol.replace("USDT", "");
+  const baseAsset = pairBaseAsset(symbol);
   const fills = Array.isArray(result.fills) ? result.fills : [];
   let commissionUsdt = 0;
   let baseCommission = 0;
@@ -636,7 +638,7 @@ function summarizeOrderFills(result, symbol, side) {
     const commission = parseFloat(fill.commission || 0);
     if (!commission) return;
     const asset = fill.commissionAsset;
-    if (asset === "USDT") commissionUsdt += commission;
+    if (asset === "USDT" || asset === "USDC") commissionUsdt += commission;
     else if (asset === baseAsset) baseCommission += commission;
     else {
       const px = getAssetUsdPrice(asset);
@@ -676,6 +678,12 @@ const PEGGED_BASES = new Set([
 
 function pairBaseAsset(symbol) {
   return String(symbol || "").toUpperCase().replace(/(USDT|USDC|FDUSD|BUSD|TUSD|USD)$/, "");
+}
+
+function pairQuote(symbol) {
+  const sym = String(symbol || "").toUpperCase();
+  if (sym.endsWith("USDC")) return "USDC";
+  return "USDT";
 }
 
 function isPeggedSymbol(symbol) {
@@ -952,6 +960,14 @@ async function updateAccountBalances() {
   } catch (err) {
     console.error("Failed to update background balances:", err.message);
   }
+
+  try {
+    const [usdtFunding, usdcFunding] = await Promise.all([getFundingFree("USDT"), getFundingFree("USDC")]);
+    fundingFreeCache.USDT = usdtFunding;
+    fundingFreeCache.USDC = usdcFunding;
+  } catch (err) {
+    console.warn("[STABLE FUNDING]", err.message);
+  }
 }
 
 function collectSpotTradeSymbols() {
@@ -1029,7 +1045,7 @@ async function fetchBinanceMyTrades(symbol, limit = 200) {
 }
 
 function summarizeImportedFills(fills, symbol, side) {
-  const baseAsset = symbol.replace("USDT", "");
+  const baseAsset = pairBaseAsset(symbol);
   let commissionUsdt = 0;
   let baseCommission = 0;
   let qty = 0;
@@ -1044,7 +1060,7 @@ function summarizeImportedFills(fills, symbol, side) {
     const commission = parseFloat(fill.commission || 0);
     if (!commission) return;
     const asset = fill.commissionAsset;
-    if (asset === "USDT") commissionUsdt += commission;
+    if (asset === "USDT" || asset === "USDC") commissionUsdt += commission;
     else if (asset === baseAsset) baseCommission += commission;
     else {
       const px = getAssetUsdPrice(asset);
@@ -1710,6 +1726,61 @@ async function placeEquityMarketOrder({ ticker, side, usdtAmount, quantity, sell
   }
 }
 
+function stableSpendable(asset) {
+  const quote = String(asset || "").toUpperCase();
+  const spot = availableBalances[quote] || 0;
+  const funding = fundingFreeCache[quote] || 0;
+  return { quote, spot, funding, total: spot + funding };
+}
+
+function stableThatCovers(amount) {
+  const need = Number(amount) || 0;
+  for (const quote of ["USDT", "USDC"]) {
+    const spend = stableSpendable(quote);
+    if (spend.total + 1e-8 >= need) return spend;
+  }
+  return null;
+}
+
+function tradableQuoteSymbol(symbol, quote) {
+  const pair = `${pairBaseAsset(symbol)}${quote}`;
+  if (quote === "USDT") return pair;
+  return symbolLotSizes[pair] ? pair : null;
+}
+
+function resolveCryptoBuy(symbol, amount) {
+  const need = Number(amount) || 0;
+  for (const quote of ["USDT", "USDC"]) {
+    const spend = stableSpendable(quote);
+    if (spend.total + 1e-8 < need) continue;
+    const pair = tradableQuoteSymbol(symbol, quote);
+    if (!pair) continue;
+    return { ...spend, symbol: pair };
+  }
+  return null;
+}
+
+function insufficientStableMessage(amount) {
+  const need = Number(amount) || 0;
+  const usdt = stableSpendable("USDT");
+  const usdc = stableSpendable("USDC");
+  return `Need $${need.toFixed(2)} in USDT or USDC. USDT $${usdt.total.toFixed(2)} (spot $${usdt.spot.toFixed(2)}), USDC $${usdc.total.toFixed(2)} (spot $${usdc.spot.toFixed(2)}).`;
+}
+
+async function ensureQuoteOnSpot(quote, amount) {
+  await updateAccountBalances();
+  const spot = availableBalances[quote] || 0;
+  if (spot + 1e-8 >= amount) return { success: true, spot };
+  const pulled = await pullFundingToSpot(quote, amount);
+  if (!pulled.success) return pulled;
+  await updateAccountBalances();
+  const now = availableBalances[quote] || 0;
+  if (now + 1e-8 < amount) {
+    return { success: false, error: `Need $${Number(amount).toFixed(2)} ${quote} on Spot. Spot has $${now.toFixed(2)}.` };
+  }
+  return { success: true, spot: now };
+}
+
 async function placeMarketOrder({ symbol, side, usdtAmount, quantity, sellAll = false, alertId = null, source = "manual" }) {
   const apiKey = process.env.BINANCE_API_KEY;
   const secretKey = process.env.BINANCE_SECRET_KEY;
@@ -1732,11 +1803,23 @@ async function placeMarketOrder({ symbol, side, usdtAmount, quantity, sellAll = 
     });
   }
   const sideUpper = String(side || "").toUpperCase();
-  const baseAsset = symUpper.replace("USDT", "");
   const isSell = sideUpper === "SELL";
   const clearWallet = isSell && (sellAll || !quantity);
   const tradeAmount = usdtAmount || config.tradeAmountUsdt;
-  let queryParams = `symbol=${symUpper}&side=${sideUpper}&type=MARKET`;
+  let orderSymbol = symUpper;
+  let quoteAsset = pairQuote(symUpper);
+
+  if (!isSell) {
+    const plan = resolveCryptoBuy(symUpper, tradeAmount);
+    if (!plan) return { success: false, error: insufficientStableMessage(tradeAmount) };
+    orderSymbol = plan.symbol;
+    quoteAsset = plan.quote;
+    const settled = await ensureQuoteOnSpot(quoteAsset, tradeAmount);
+    if (!settled.success) return { success: false, error: settled.error || insufficientStableMessage(tradeAmount) };
+  }
+
+  const baseAsset = pairBaseAsset(orderSymbol);
+  let queryParams = `symbol=${orderSymbol}&side=${sideUpper}&type=MARKET`;
 
   try {
     if (isSell) {
@@ -1746,8 +1829,8 @@ async function placeMarketOrder({ symbol, side, usdtAmount, quantity, sellAll = 
 
       if (rawQty <= 0) return { success: false, error: `No available ${baseAsset} balance to sell.` };
 
-      const markPrice = marketData[symUpper]?.prices.slice(-1)[0] || 0;
-      const formattedQty = formatQuantity(symUpper, rawQty);
+      const markPrice = marketData[orderSymbol]?.prices.slice(-1)[0] || marketData[symUpper]?.prices.slice(-1)[0] || 0;
+      const formattedQty = formatQuantity(orderSymbol, rawQty);
 
       if (!parseFloat(formattedQty) || isDustQty(symUpper, formattedQty, markPrice)) {
         const dust = await convertDustToBnb(baseAsset);
@@ -1779,13 +1862,13 @@ async function placeMarketOrder({ symbol, side, usdtAmount, quantity, sellAll = 
       return { success: false, error: result.msg || "Order rejected by Binance", details: result };
     }
 
-    const economics = summarizeOrderFills(result, symUpper, sideUpper);
-    const executedPrice = parseFloat(result.fills?.[0]?.price || marketData[symUpper]?.prices.slice(-1)[0] || 0);
+    const economics = summarizeOrderFills(result, orderSymbol, sideUpper);
+    const executedPrice = parseFloat(result.fills?.[0]?.price || marketData[orderSymbol]?.prices.slice(-1)[0] || marketData[symUpper]?.prices.slice(-1)[0] || 0);
     const executedQty = economics.netQty;
     const executedUsdt = economics.recordedUsdt || parseFloat(result.cummulativeQuoteQty || tradeAmount || executedQty * executedPrice);
 
     db.run(`INSERT INTO trades (symbol, side, price, qty, usdt_amount, order_id, timestamp, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
-      symUpper,
+      orderSymbol,
       sideUpper,
       executedPrice,
       executedQty,
@@ -1801,7 +1884,7 @@ async function placeMarketOrder({ symbol, side, usdtAmount, quantity, sellAll = 
     let dustConverted = false;
     if (clearWallet) {
       const leftover = availableBalances[baseAsset] || 0;
-      if (leftover > 0 && isDustQty(symUpper, leftover, executedPrice)) {
+      if (leftover > 0 && isDustQty(orderSymbol, leftover, executedPrice)) {
         dustConverted = Boolean(await convertDustToBnb(baseAsset));
         await updateAccountBalances();
       }
@@ -1810,11 +1893,11 @@ async function placeMarketOrder({ symbol, side, usdtAmount, quantity, sellAll = 
     if (source !== "bot") {
       sendTelegramAlert(
         `✅ <b>TRADE EXECUTED (${sideUpper})</b>\n\n` +
-          `<b>Symbol:</b> ${symUpper}\n` +
-          `<b>Amount:</b> $${executedUsdt.toFixed(2)} USDT (${executedQty} ${baseAsset})\n` +
+          `<b>Symbol:</b> ${orderSymbol}\n` +
+          `<b>Amount:</b> $${executedUsdt.toFixed(2)} ${quoteAsset} (${executedQty} ${baseAsset})\n` +
           `<b>Executed Price:</b> $${executedPrice}\n` +
           (economics.commissionUsdt || economics.baseCommission
-            ? `<b>Fees:</b> $${economics.commissionUsdt.toFixed(4)} USDT` + (economics.baseCommission ? ` + ${economics.baseCommission} ${baseAsset}` : "") + `\n`
+            ? `<b>Fees:</b> $${economics.commissionUsdt.toFixed(4)}` + (economics.baseCommission ? ` + ${economics.baseCommission} ${baseAsset}` : "") + `\n`
             : "") +
           (dustConverted ? `<b>Dust:</b> leftover ${baseAsset} converted to BNB\n` : "") +
           `<b>Order ID:</b> <code>${result.orderId}</code>`,
@@ -1824,7 +1907,8 @@ async function placeMarketOrder({ symbol, side, usdtAmount, quantity, sellAll = 
     return {
       success: true,
       orderId: result.orderId,
-      symbol: symUpper,
+      symbol: orderSymbol,
+      quoteAsset,
       side: sideUpper,
       executedPrice,
       executedQty,
@@ -1846,17 +1930,17 @@ async function botMaybeBuy(symbol, closePrice, rsi) {
   if (!botSession.enabled || botSession.busy) return;
   if (botOpenPositionCount() > 0) return;
 
-  const minNotional = getMinNotional(symbol);
   const amount = Math.min(config.tradeAmountUsdt, botSession.cashUsdt);
-  const wallet = availableBalances.USDT || 0;
+  const plan = resolveCryptoBuy(symbol, amount);
+  const minNotional = getMinNotional(plan?.symbol || symbol);
 
   if (amount + 1e-8 < minNotional) {
     botSession.lastAction = `Skipped BUY ${symbol} · cash $${botSession.cashUsdt.toFixed(2)} below min notional`;
     persistBotSession();
     return;
   }
-  if (wallet + 1e-8 < amount) {
-    botSession.lastAction = `Skipped BUY ${symbol} · wallet has $${wallet.toFixed(2)} USDT`;
+  if (!plan) {
+    botSession.lastAction = `Skipped BUY ${symbol} · ${insufficientStableMessage(amount)}`;
     persistBotSession();
     return;
   }
@@ -1888,12 +1972,13 @@ async function botMaybeBuy(symbol, closePrice, rsi) {
     sendChannelTelegram(
       "crypto",
       `🤖 <b>AUTOPILOT BUY (${result.symbol})</b>\n\n` +
-        `<b>Spent:</b> $${result.executedUsdt.toFixed(2)} USDT\n` +
+        `<b>Spent:</b> $${result.executedUsdt.toFixed(2)} ${result.quoteAsset || pairQuote(result.symbol)}\n` +
         `<b>Price:</b> $${result.executedPrice}\n` +
         `<b>RSI:</b> ${typeof rsi === "number" ? rsi.toFixed(2) : "--"}\n` +
         `<b>Bot cash left:</b> $${botSession.cashUsdt.toFixed(2)}\n` +
         `<b>Order:</b> <code>${result.orderId}</code>`,
     );
+    subscribeKline(result.symbol);
     maybeSessionPnlAlert();
   } finally {
     botSession.busy = false;
@@ -1975,7 +2060,6 @@ function parseBotAlertPercent(value, label) {
 
 async function startBotSession({ budgetUsdt, alertProfitPercent, alertLossPercent }) {
   await updateAccountBalances();
-  const wallet = availableBalances.USDT || 0;
   const hasOpen = botOpenPositionCount() > 0;
 
   if (hasOpen) {
@@ -2006,8 +2090,8 @@ async function startBotSession({ budgetUsdt, alertProfitPercent, alertLossPercen
     allocation = budgetUsdt;
   }
 
-  if (wallet + 1e-8 < allocation) {
-    return { success: false, error: `Need $${allocation.toFixed(2)} USDT. Spot wallet has $${wallet.toFixed(2)}.` };
+  if (!stableThatCovers(allocation)) {
+    return { success: false, error: insufficientStableMessage(allocation) };
   }
 
   if (!botBankroll.seedUsdt) botBankroll.seedUsdt = allocation;
@@ -2285,24 +2369,26 @@ async function scanAutopilotUniverse() {
     }
 
     if (!botSession.enabled) {
-      const usdtBalance = availableBalances.USDT || 0;
-      if (usdtBalance + 1e-8 >= config.tradeAmountUsdt) {
-        for (const row of ready) {
-          if (!isDashboardSymbol(row.symbol)) continue;
-          const slot = marketData[row.symbol];
-          if (!slot || slot.setupArmed || now - slot.lastSignalTime <= cooldownMs) continue;
-          slot.setupArmed = true;
-          slot.lastSignalTime = now;
-          recordStrategyAlert({ symbol: row.symbol, action: "BUY", signalType: "BUY", price: row.price, rsi: row.rsi });
-          sendChannelTelegram(
-            "crypto",
-            `⚡ <b>BUY SIGNAL (${row.symbol})</b>\n\n` +
-              `<b>15m RSI:</b> ${row.rsi.toFixed(2)} and turning up\n` +
-              `<b>Trend:</b> 1h close is above the 24-hour average\n` +
-              `<b>Price:</b> $${row.price}\n` +
-              `<b>Cash:</b> $${usdtBalance.toFixed(2)} USDT`,
-          );
-        }
+      for (const row of ready) {
+        if (!isDashboardSymbol(row.symbol)) continue;
+        const plan = resolveCryptoBuy(row.symbol, config.tradeAmountUsdt);
+        if (!plan) continue;
+        const slot = marketData[row.symbol];
+        if (!slot || slot.setupArmed || now - slot.lastSignalTime <= cooldownMs) continue;
+        slot.setupArmed = true;
+        slot.lastSignalTime = now;
+        const usdt = stableSpendable("USDT");
+        const usdc = stableSpendable("USDC");
+        recordStrategyAlert({ symbol: row.symbol, action: "BUY", signalType: "BUY", price: row.price, rsi: row.rsi });
+        sendChannelTelegram(
+          "crypto",
+          `⚡ <b>BUY SIGNAL (${row.symbol})</b>\n\n` +
+            `<b>15m RSI:</b> ${row.rsi.toFixed(2)} and turning up\n` +
+            `<b>Trend:</b> 1h close is above the 24-hour average\n` +
+            `<b>Price:</b> $${row.price}\n` +
+            `<b>Pay with:</b> ${plan.quote}\n` +
+            `<b>USDT:</b> $${usdt.total.toFixed(2)} · <b>USDC:</b> $${usdc.total.toFixed(2)}`,
+        );
       }
     }
 
@@ -2673,7 +2759,7 @@ function connectMultiStreamWS() {
         }
 
         if (target.lastRsi !== null && cooledDown) {
-          const baseAsset = sym.replace("USDT", "");
+          const baseAsset = pairBaseAsset(sym);
           const currentAssetBalance = availableBalances[baseAsset] || 0;
           const currentAssetUsdVal = currentAssetBalance * closePrice;
 
@@ -2896,7 +2982,7 @@ app.get("/api/status", (req, res) => {
     if (!marketData[sym]) return null;
     const prices = marketData[sym].prices;
     const rsiVal = marketData[sym].lastRsi;
-    const baseAsset = sym.replace("USDT", "");
+    const baseAsset = pairBaseAsset(sym);
     const holdingQty = availableBalances[baseAsset] || 0;
     const currentPrice = prices.length > 0 ? prices[prices.length - 1] : 0;
     const holdingUsd = holdingQty * currentPrice;
@@ -2910,7 +2996,7 @@ app.get("/api/status", (req, res) => {
       history: prices.slice(-20),
       rsi: typeof rsiVal === "number" ? parseFloat(rsiVal.toFixed(2)) : null,
       volSurge: marketData[sym].lastVolumeSurge,
-      canBuy: (availableBalances["USDT"] || 0) >= config.tradeAmountUsdt,
+      canBuy: Boolean(resolveCryptoBuy(sym, config.tradeAmountUsdt)),
       canSell: holdingUsd >= 5.0,
       holdingUsd: parseFloat(holdingUsd.toFixed(2)),
       avgEntryPrice: avgEntryPrice ? parseFloat(avgEntryPrice.toFixed(4)) : null,
@@ -2923,7 +3009,10 @@ app.get("/api/status", (req, res) => {
     interval: INTERVAL,
     markets: marketsList,
     config,
-    usdtBalance: parseFloat((availableBalances["USDT"] || 0).toFixed(2)),
+    usdtBalance: parseFloat((availableBalances.USDT || 0).toFixed(2)),
+    usdcBalance: parseFloat((availableBalances.USDC || 0).toFixed(2)),
+    usdtSpendable: parseFloat(stableSpendable("USDT").total.toFixed(2)),
+    usdcSpendable: parseFloat(stableSpendable("USDC").total.toFixed(2)),
   });
 });
 
