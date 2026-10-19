@@ -1235,7 +1235,11 @@
         const pnlEl = document.getElementById("bot-strip-pnl");
         const eqEl = document.getElementById("bot-strip-equity");
         const actEl = document.getElementById("bot-strip-action");
-        if (stateEl) stateEl.textContent = on ? "Autopilot · ON" : "Autopilot · OFF";
+        if (stateEl) {
+          const floor = Number(data.floorUsdt);
+          const floorBit = floor > 0 ? ` · floor ${money(floor)}` : "";
+          stateEl.textContent = data.halted ? "Desk · HALTED" : on ? `Desk · ON${floorBit}` : "Desk · OFF";
+        }
         if (pnlEl) {
           pnlEl.textContent = `${signedMoney(pnl)} (${(parseFloat(data.pnlPercent) || 0).toFixed(2)}%)`;
           pnlEl.className = pnl < 0 ? "down" : "up";
@@ -2360,6 +2364,14 @@
           const data = await res.json();
           const grid = document.getElementById("stock-grid");
           const statusEl = document.getElementById("stocks-status");
+          if (data.enabled === false) {
+            if (statusEl) statusEl.textContent = "Stocks · off";
+            const strip = document.getElementById("stock-strip");
+            if (strip) strip.title = "Stock orders are off. The desk trades Spot USDT only.";
+            if (grid) grid.innerHTML = "";
+            return;
+          }
+
           if (!data.stocks || !grid) return;
 
           if (!data.connected) {

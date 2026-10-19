@@ -73,6 +73,11 @@ function createIdleBotSession() {
     lastAlertAt: 0,
     realizedPnl: 0,
     busy: false,
+    halted: false,
+    haltReason: "",
+    userStopped: false,
+    deskGeneration: 0,
+    floorUsdt: 0,
   };
 }
 
@@ -499,9 +504,12 @@ function markToMarketBotPositions() {
 let lastSetupNote = "";
 
 function describeBotWatch() {
-  if (lastSetupNote) return lastSetupNote;
   const exits = effectiveExits();
-  return `Flat · 15m pullback inside a 1h uptrend · TP ${exits.takeProfit}% / SL ${exits.stopLoss}%`;
+  const floor = parseFloat(botSession.floorUsdt) || 0;
+  const clip = Number(config.tradeAmountUsdt) || 0;
+  const risk = floor > 0 ? ` · clip $${clip.toFixed(2)} · floor $${floor.toFixed(2)}` : "";
+  const base = lastSetupNote || `Flat · 15m pullback inside a 1h uptrend · TP ${exits.takeProfit}% / SL ${exits.stopLoss}%`;
+  return base + risk;
 }
 
 function getBotStatus() {
@@ -535,6 +543,10 @@ function getBotStatus() {
     usdcWallet: parseFloat(stableSpendable("USDC").total.toFixed(2)),
     defaults: { ...botConfig },
     clipUsdt: config.tradeAmountUsdt,
+    floorUsdt: parseFloat((parseFloat(botSession.floorUsdt) || 0).toFixed(2)),
+    halted: Boolean(botSession.halted),
+    haltReason: botSession.haltReason || "",
+    stocksEnabled: STOCKS_ENABLED,
     bankroll: {
       seedUsdt: parseFloat((seed || 0).toFixed(2)),
       cashUsdt: parseFloat((parseFloat(botBankroll.cashUsdt) || cash).toFixed(2)),
@@ -665,6 +677,10 @@ const TRADE_PASSWORD = process.env.TRADE_PASSWORD || "admin123";
 
 const SYMBOLS = (process.env.SYMBOLS || "btcusdt,ethusdt,solusdt,dogeusdt,xrpusdt").split(",").map((s) => s.trim().toLowerCase());
 const INTERVAL = "1m";
+const STOCKS_ENABLED = false;
+const DESK_GENERATION = 2;
+const DESK_CLIP_CAP_USDT = 40;
+const DESK_FLOOR_FRACTION = 0.25;
 const BOT_UNIVERSE_SIZE = 25;
 const BOT_SCAN_MS = 5 * 60 * 1000;
 const BOT_MIN_QUOTE_VOLUME = 3_000_000;
@@ -1655,6 +1671,9 @@ async function placeEquityMarketOrder({ ticker, side, usdtAmount, quantity, sell
   const params = { symbol: ticker, side: sideUpper, orderType: "MARKET" };
 
   try {
+    if (!isSell && !STOCKS_ENABLED) {
+      return { success: false, error: "Stock buys are off. This desk trades Spot USDT crypto only." };
+    }
     if (isSell) {
       await refreshStockPositionCache();
       const held = getHeldStockQty(ticker);
@@ -1926,8 +1945,89 @@ function botOpenPositionCount() {
   return Object.keys(botSession.positions || {}).length;
 }
 
+async function enforceLossFloor() {
+  if (!botSession.enabled || botSession.halted || botSession.busy) return false;
+  const equity = (parseFloat(botSession.cashUsdt) || 0) + markToMarketBotPositions().value;
+  const floor = parseFloat(botSession.floorUsdt) || (parseFloat(botBankroll.seedUsdt) || 0) * DESK_FLOOR_FRACTION;
+  if (!(floor > 0) || equity > floor + 0.05) return false;
+
+  botSession.halted = true;
+  botSession.haltReason = `Equity $${equity.toFixed(2)} hit the $${floor.toFixed(2)} floor.`;
+  botSession.lastAction = botSession.haltReason;
+  persistBotSession();
+  console.log(`[DESK] ${botSession.haltReason}`);
+  await stopBotSession();
+  botSession.halted = true;
+  botSession.userStopped = true;
+  persistBotSession();
+  sendTelegramAlert(
+    `🛑 <b>DESK HALTED</b>\n\n${botSession.haltReason}\nThe desk stays off until you start it again.`,
+  );
+  return true;
+}
+
+function deskClip(usdt) {
+  const quarter = Math.floor(usdt * DESK_FLOOR_FRACTION * 100) / 100;
+  return parseFloat(Math.min(DESK_CLIP_CAP_USDT, Math.max(10, quarter)).toFixed(2));
+}
+
+async function armSpotDesk() {
+  if (botSession.halted || botSession.userStopped) {
+    console.log(`[DESK] left off · ${botSession.haltReason || "stopped by you"}`);
+    return { armed: false, notified: false };
+  }
+  if (botSession.deskGeneration === DESK_GENERATION && botSession.enabled) {
+    await enforceLossFloor();
+    return { armed: true, notified: false };
+  }
+
+  await updateAccountBalances();
+  const usdt = availableBalances.USDT || 0;
+  if (usdt < 10) {
+    console.log(`[DESK] Spot USDT $${usdt.toFixed(2)} is below the $10 minimum.`);
+    return { armed: false, notified: false };
+  }
+
+  const allocation = parseFloat(usdt.toFixed(2));
+  const clip = deskClip(allocation);
+  const floor = parseFloat((allocation * DESK_FLOOR_FRACTION).toFixed(2));
+  config.tradeAmountUsdt = clip;
+  saveSettingToDb("tradeAmountUsdt", clip);
+  alertConfig.stocksTelegramEnabled = false;
+  saveSettingToDb("stocksTelegramEnabled", "false");
+
+  botBankroll = { seedUsdt: allocation, cashUsdt: allocation };
+  persistBotBankroll();
+  botSession = {
+    ...createIdleBotSession(),
+    enabled: true,
+    deskGeneration: DESK_GENERATION,
+    startedAt: Date.now(),
+    budgetUsdt: allocation,
+    alertProfitPercent: 10,
+    alertLossPercent: 25,
+    startingEquity: allocation,
+    cashUsdt: allocation,
+    floorUsdt: floor,
+    lastAction: `Armed · $${allocation.toFixed(2)} USDT · clip $${clip.toFixed(2)} · floor $${floor.toFixed(2)}`,
+  };
+  persistBotSession();
+  console.log(`[DESK] ON · $${allocation.toFixed(2)} USDT · clip $${clip.toFixed(2)} · floor $${floor.toFixed(2)}`);
+  sendTelegramAlert(
+    `🤖 <b>SPOT DESK ON</b>\n\n` +
+      `<b>Capital:</b> $${allocation.toFixed(2)} USDT\n` +
+      `<b>Clip:</b> $${clip.toFixed(2)} · one position\n` +
+      `<b>Floor:</b> $${floor.toFixed(2)} (stops after a 75% loss)\n` +
+      `<b>Rule:</b> 15m pullback inside a 1h uptrend, liquid USDT pairs only\n` +
+      `<b>Stocks:</b> off`,
+  );
+  void scanAutopilotUniverse().catch((err) => console.error("[DESK] scan", err.message));
+  return { armed: true, notified: true };
+}
+
 async function botMaybeBuy(symbol, closePrice, rsi) {
   if (!botSession.enabled || botSession.busy) return;
+  if (await enforceLossFloor()) return;
   if (botOpenPositionCount() > 0) return;
 
   const amount = Math.min(config.tradeAmountUsdt, botSession.cashUsdt);
@@ -2064,6 +2164,8 @@ async function startBotSession({ budgetUsdt, alertProfitPercent, alertLossPercen
 
   if (hasOpen) {
     botSession.enabled = true;
+    botSession.halted = false;
+    botSession.userStopped = false;
     botSession.alertProfitPercent = alertProfitPercent;
     botSession.alertLossPercent = alertLossPercent;
     botSession.lastAlertKind = null;
@@ -2107,6 +2209,10 @@ async function startBotSession({ budgetUsdt, alertProfitPercent, alertLossPercen
     alertLossPercent,
     startingEquity: allocation,
     cashUsdt: allocation,
+    floorUsdt: parseFloat((allocation * DESK_FLOOR_FRACTION).toFixed(2)),
+    halted: false,
+    userStopped: false,
+    deskGeneration: DESK_GENERATION,
     lastAction: carry
       ? `Armed · carrying $${allocation.toFixed(2)} USDT · waiting for a 15m pullback in a 1h uptrend`
       : `Armed · $${allocation.toFixed(2)} USDT · waiting for a 15m pullback in a 1h uptrend`,
@@ -2145,9 +2251,12 @@ async function stopBotSession() {
   botBankroll.cashUsdt = parked;
   if (!botBankroll.seedUsdt) botBankroll.seedUsdt = seed;
   persistBotBankroll();
-  botSession.lastAction = errors.length
-    ? `Stop incomplete · ${errors.join("; ")}`
-    : `Stopped · parked $${parked.toFixed(2)} USDT · session ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)} · lifetime ${lifetime >= 0 ? "+" : ""}$${lifetime.toFixed(2)}`;
+  botSession.userStopped = true;
+  botSession.lastAction = botSession.halted && botSession.haltReason
+    ? botSession.haltReason
+    : errors.length
+      ? `Stop incomplete · ${errors.join("; ")}`
+      : `Stopped · parked $${parked.toFixed(2)} USDT · session ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)} · lifetime ${lifetime >= 0 ? "+" : ""}$${lifetime.toFixed(2)}`;
   persistBotSession();
   botSession.busy = false;
 
@@ -2307,6 +2416,7 @@ async function flattenPeggedBotPositions() {
 
 async function scanAutopilotUniverse() {
   try {
+    if (botSession.enabled && (await enforceLossFloor())) return;
     await flattenPeggedBotPositions();
     if (botSession.enabled && botOpenPositionCount() > 0) return;
     const exits = effectiveExits();
@@ -2443,6 +2553,7 @@ function quoteRangePercent(prices) {
 }
 
 function evaluateStockSignals(symbol, closePrice, volume) {
+  if (!STOCKS_ENABLED) return;
   const target = stockMarketData[symbol];
   if (!target || !Number.isFinite(closePrice)) return;
 
@@ -2948,6 +3059,16 @@ app.get("/api/alerts", (req, res) => {
 });
 
 app.get("/api/stocks", (req, res) => {
+  if (!STOCKS_ENABLED) {
+    return res.json({
+      success: true,
+      enabled: false,
+      source: "binance",
+      feed: "off",
+      connected: false,
+      stocks: [],
+    });
+  }
   const stocks = STOCK_SYMBOLS.map((symbol) => {
     const data = stockMarketData[symbol];
     const prices = data.prices;
@@ -3161,23 +3282,25 @@ app.use(express.static("public"));
     void scanAutopilotUniverse().catch((err) => console.error("[AUTOPILOT] scan", err.message));
   }, BOT_SCAN_MS);
   await bootstrapHistoricalData();
-  await bootstrapBinanceStocks();
   connectMultiStreamWS();
-  await pollBinanceStockQuotes();
-  setInterval(() => {
-    void pollBinanceStockQuotes().catch((err) => console.warn("[BINANCE STOCKS]", err.message));
-  }, 15000);
+  if (STOCKS_ENABLED) {
+    await bootstrapBinanceStocks();
+    await pollBinanceStockQuotes();
+    setInterval(() => {
+      void pollBinanceStockQuotes().catch((err) => console.warn("[BINANCE STOCKS]", err.message));
+    }, 15000);
+  } else {
+    console.log("[DESK] Stock quotes and stock orders are off.");
+  }
+  const desk = await armSpotDesk();
   setTimeout(() => {
     void scanAutopilotUniverse().catch((err) => console.error("[AUTOPILOT] scan", err.message));
   }, 8000);
 
   app.listen(PORT, async () => {
     console.log(`Terminal running on http://localhost:${PORT}`);
-    const symbolsList = SYMBOLS.map((s) => s.toUpperCase()).join(", ");
-    await sendTelegramAlert(
-      `🟢 <b>Binance Trader Online</b>\n\n` +
-        `Monitoring: <code>${symbolsList}</code>\n` +
-        `Stocks: <code>${STOCK_SYMBOLS.join(", ")}</code>`,
-    );
+    if (desk.notified) return;
+    const reason = botSession.haltReason || (botSession.userStopped ? "Desk is off." : "Desk is idle.");
+    await sendTelegramAlert(`🟢 <b>Trader online</b>\n\n${reason}`);
   });
 })();
