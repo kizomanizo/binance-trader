@@ -508,7 +508,7 @@ function describeBotWatch() {
   const floor = parseFloat(botSession.floorUsdt) || 0;
   const clip = Number(config.tradeAmountUsdt) || 0;
   const risk = floor > 0 ? ` · clip $${clip.toFixed(2)} · floor $${floor.toFixed(2)}` : "";
-  const base = lastSetupNote || `Flat · 15m pullback inside a 1h uptrend · TP ${exits.takeProfit}% / SL ${exits.stopLoss}%`;
+  const base = lastSetupNote || "Flat · 8h coil break on BTC, ETH, SOL, BNB, XRP";
   return base + risk;
 }
 
@@ -554,7 +554,7 @@ function getBotStatus() {
   };
 }
 
-function evaluateBotSellSignal(symbol, closePrice, rsi) {
+function evaluateBotSellSignal(symbol, closePrice, rsi, extreme) {
   const pos = botSession.positions[symbol];
   if (!pos || !closePrice) return null;
   const entry = botEntryPrice(pos);
@@ -573,6 +573,22 @@ function evaluateBotSellSignal(symbol, closePrice, rsi) {
   pos.maxNetPnl = Math.max(prevMax, netPnl);
   if (pos.maxNetPnl > prevMax + 0.05) persistBotSession();
 
+  const openedAt = parseFloat(pos.openedAt) || 0;
+  const coilTp = parseFloat(pos.takeProfitPct);
+  const coilSl = parseFloat(pos.stopLossPct);
+  if (Number.isFinite(coilTp) && coilTp > 0 && Number.isFinite(coilSl) && coilSl > 0) {
+    const high = Number.isFinite(extreme?.high) ? extreme.high : closePrice;
+    const low = Number.isFinite(extreme?.low) ? extreme.low : closePrice;
+    const lowPnl = ((low - entry) / entry) * 100;
+    const highPnl = ((high - entry) / entry) * 100;
+    if (lowPnl <= -coilSl) return { type: "STOP_LOSS", avgEntryPrice: entry, netPnl };
+    if (highPnl >= coilTp) return { type: "TAKE_PROFIT", avgEntryPrice: entry, netPnl };
+    if (openedAt && Date.now() - openedAt > 12 * 60 * 60 * 1000 && netPnl < exits.fee) {
+      return { type: "TIME_STOP", avgEntryPrice: entry, netPnl };
+    }
+    return null;
+  }
+
   if (netPnl >= exits.takeProfit) return { type: "TAKE_PROFIT", avgEntryPrice: entry, netPnl };
   if (typeof rsi === "number" && rsi >= config.rsiOverbought && netPnl >= Math.max(exits.fee * 3, 0.4)) {
     return { type: "TAKE_PROFIT", avgEntryPrice: entry, netPnl };
@@ -582,7 +598,6 @@ function evaluateBotSellSignal(symbol, closePrice, rsi) {
   }
   if (netPnl <= -exits.stopLoss) return { type: "STOP_LOSS", avgEntryPrice: entry, netPnl };
 
-  const openedAt = parseFloat(pos.openedAt) || 0;
   if (openedAt && Date.now() - openedAt > 12 * 60 * 60 * 1000 && netPnl < exits.fee) {
     return { type: "TIME_STOP", avgEntryPrice: entry, netPnl };
   }
@@ -684,6 +699,11 @@ const DESK_FLOOR_FRACTION = 0.25;
 const BOT_UNIVERSE_SIZE = 25;
 const BOT_SCAN_MS = 5 * 60 * 1000;
 const BOT_MIN_QUOTE_VOLUME = 3_000_000;
+const COIL_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"];
+const COIL_BARS = 32;
+const COIL_MIN_WIDTH = 0.6;
+const COIL_MAX_WIDTH = 1.8;
+const COIL_VOL_MULT = 1.25;
 const LEVERAGE_USDT_RE = /(UP|DOWN|BULL|BEAR)USDT$/;
 const STABLE_USDT_PAIRS = new Set(["USDTUSDT", "USDCUSDT", "BUSDUSDT", "TUSDUSDT", "FDUSDUSDT", "DAIUSDT", "USDPUSDT", "USDEUSDT", "USD1USDT"]);
 const PEGGED_BASES = new Set([
@@ -2009,7 +2029,7 @@ async function armSpotDesk() {
     startingEquity: allocation,
     cashUsdt: allocation,
     floorUsdt: floor,
-    lastAction: `Armed · $${allocation.toFixed(2)} USDT · clip $${clip.toFixed(2)} · floor $${floor.toFixed(2)}`,
+    lastAction: `Armed · $${allocation.toFixed(2)} USDT · coil on majors · clip $${clip.toFixed(2)} · floor $${floor.toFixed(2)}`,
   };
   persistBotSession();
   console.log(`[DESK] ON · $${allocation.toFixed(2)} USDT · clip $${clip.toFixed(2)} · floor $${floor.toFixed(2)}`);
@@ -2018,14 +2038,14 @@ async function armSpotDesk() {
       `<b>Capital:</b> $${allocation.toFixed(2)} USDT\n` +
       `<b>Clip:</b> $${clip.toFixed(2)} · one position\n` +
       `<b>Floor:</b> $${floor.toFixed(2)} (stops after a 75% loss)\n` +
-      `<b>Rule:</b> 15m pullback inside a 1h uptrend, liquid USDT pairs only\n` +
+      `<b>Rule:</b> 8h coil break on BTC, ETH, SOL, BNB, XRP while the 1h trend is up\n` +
       `<b>Stocks:</b> off`,
   );
   void scanAutopilotUniverse().catch((err) => console.error("[DESK] scan", err.message));
   return { armed: true, notified: true };
 }
 
-async function botMaybeBuy(symbol, closePrice, rsi) {
+async function botMaybeBuy(symbol, closePrice, rsi, coil = null) {
   if (!botSession.enabled || botSession.busy) return;
   if (await enforceLossFloor()) return;
   if (botOpenPositionCount() > 0) return;
@@ -2062,8 +2082,14 @@ async function botMaybeBuy(symbol, closePrice, rsi) {
       orderId: result.orderId,
       openedAt: Date.now(),
       maxNetPnl: 0,
+      takeProfitPct: Number.isFinite(coil?.takeProfitPct) ? coil.takeProfitPct : null,
+      stopLossPct: Number.isFinite(coil?.stopLossPct) ? coil.stopLossPct : null,
+      coilWidth: Number.isFinite(coil?.width) ? coil.width : null,
     };
-    botSession.lastAction = `BOUGHT ${result.symbol} $${result.executedUsdt.toFixed(2)}`;
+    const coilNote = Number.isFinite(coil?.width)
+      ? ` · coil ${coil.width.toFixed(2)}% · target ${coil.takeProfitPct.toFixed(2)}% · stop ${coil.stopLossPct.toFixed(2)}%`
+      : "";
+    botSession.lastAction = `BOUGHT ${result.symbol} $${result.executedUsdt.toFixed(2)}${coilNote}`;
     persistBotSession();
     syncBotBankroll();
 
@@ -2075,6 +2101,9 @@ async function botMaybeBuy(symbol, closePrice, rsi) {
         `<b>Spent:</b> $${result.executedUsdt.toFixed(2)} ${result.quoteAsset || pairQuote(result.symbol)}\n` +
         `<b>Price:</b> $${result.executedPrice}\n` +
         `<b>RSI:</b> ${typeof rsi === "number" ? rsi.toFixed(2) : "--"}\n` +
+        (Number.isFinite(coil?.width)
+          ? `<b>Coil:</b> ${coil.width.toFixed(2)}% · target ${coil.takeProfitPct.toFixed(2)}% · stop ${coil.stopLossPct.toFixed(2)}%\n`
+          : "") +
         `<b>Bot cash left:</b> $${botSession.cashUsdt.toFixed(2)}\n` +
         `<b>Order:</b> <code>${result.orderId}</code>`,
     );
@@ -2214,20 +2243,20 @@ async function startBotSession({ budgetUsdt, alertProfitPercent, alertLossPercen
     userStopped: false,
     deskGeneration: DESK_GENERATION,
     lastAction: carry
-      ? `Armed · carrying $${allocation.toFixed(2)} USDT · waiting for a 15m pullback in a 1h uptrend`
-      : `Armed · $${allocation.toFixed(2)} USDT · waiting for a 15m pullback in a 1h uptrend`,
+      ? `Armed · carrying $${allocation.toFixed(2)} USDT · waiting for an 8h coil break`
+      : `Armed · $${allocation.toFixed(2)} USDT · waiting for an 8h coil break`,
   };
   persistBotSession();
   console.log(
-    `[AUTOPILOT] ON · capital $${allocation.toFixed(2)}${carry ? " (carried)" : ""} · clip $${Number(config.tradeAmountUsdt).toFixed(2)} · 15m pullback in a 1h uptrend · TP ${effectiveExits().takeProfit}% / SL ${effectiveExits().stopLoss}%`,
+    `[AUTOPILOT] ON · capital $${allocation.toFixed(2)}${carry ? " (carried)" : ""} · clip $${Number(config.tradeAmountUsdt).toFixed(2)} · 8h coil on ${COIL_SYMBOLS.join(", ")}`,
   );
   sendTelegramAlert(
     `🤖 <b>AUTOPILOT ON</b>\n\n` +
       `<b>Capital:</b> $${allocation.toFixed(2)} USDT${carry ? " (includes prior session P/L)" : ""}\n` +
       `<b>Clip size:</b> $${Number(config.tradeAmountUsdt).toFixed(2)} (strategy default)\n` +
       `<b>Alerts:</b> +${alertProfitPercent}% / −${alertLossPercent}% session P/L\n` +
-      `<b>Pairs:</b> monitored + top ${BOT_UNIVERSE_SIZE} USDT by 24h volume\n` +
-      `<b>Exits:</b> TP ${effectiveExits().takeProfit}% on price (stop capped at ${effectiveExits().stopLoss}%). Pegged coins are sold back to USDT.`,
+      `<b>Pairs:</b> ${COIL_SYMBOLS.join(", ")}\n` +
+      `<b>Exits:</b> target 2× the coil, stop 0.6× the coil. Flat after 12 hours if neither prints.`,
   );
   void scanAutopilotUniverse().catch((err) => console.error("[AUTOPILOT] scan", err.message));
   return { success: true, resumed: false, status: getBotStatus() };
@@ -2414,66 +2443,109 @@ async function flattenPeggedBotPositions() {
   }
 }
 
+function assessCoilBreak(klines15, klines1h, now = Date.now()) {
+  const closed = (klines15 || []).filter((k) => Number(k[6]) < now);
+  if (closed.length < COIL_BARS + 20) return null;
+  const bar = closed[closed.length - 1];
+  const prior = closed.slice(-COIL_BARS - 1, -1);
+  if (prior.length < COIL_BARS) return null;
+
+  let hi = -Infinity;
+  let lo = Infinity;
+  for (const k of prior) {
+    hi = Math.max(hi, parseFloat(k[2]));
+    lo = Math.min(lo, parseFloat(k[3]));
+  }
+  const close = parseFloat(bar[4]);
+  if (!(close > 0) || !(hi > lo)) return null;
+  const width = ((hi - lo) / close) * 100;
+  if (width < COIL_MIN_WIDTH || width > COIL_MAX_WIDTH || !(close > hi)) return null;
+
+  const vols = closed.slice(-20).map((k) => parseFloat(k[5])).filter(Number.isFinite);
+  if (vols.length < 20) return null;
+  const volSma = SMA.calculate({ values: vols, period: 20 });
+  const avgVol = volSma[volSma.length - 1];
+  const lastVol = vols[vols.length - 1];
+  if (!(avgVol > 0) || !(lastVol >= avgVol * COIL_VOL_MULT)) return null;
+
+  const hourly = (klines1h || []).filter((k) => Number(k[6]) <= Number(bar[6]));
+  const closes1h = hourly.slice(-24).map((k) => parseFloat(k[4])).filter(Number.isFinite);
+  if (closes1h.length < 24) return null;
+  const trendSma = SMA.calculate({ values: closes1h, period: 24 });
+  const trend = trendSma[trendSma.length - 1];
+  const lastHour = closes1h[closes1h.length - 1];
+  if (!(trend > 0 && lastHour > trend)) return null;
+
+  const closes15 = closed.map((k) => parseFloat(k[4])).filter(Number.isFinite);
+  const rsiVals = RSI.calculate({ values: closes15, period: 14 });
+  const rsi = rsiVals.length ? rsiVals[rsiVals.length - 1] : null;
+  return {
+    price: close,
+    rsi,
+    width,
+    volMultiple: lastVol / avgVol,
+    closeTime: Number(bar[6]),
+    stopLossPct: parseFloat(Math.min(1.1, Math.max(0.35, width * 0.6)).toFixed(2)),
+    takeProfitPct: parseFloat(Math.max(1.2, width * 2).toFixed(2)),
+  };
+}
+
+let coilScanBusy = false;
+
 async function scanAutopilotUniverse() {
+  if (coilScanBusy) return;
+  coilScanBusy = true;
   try {
     if (botSession.enabled && (await enforceLossFloor())) return;
     await flattenPeggedBotPositions();
     if (botSession.enabled && botOpenPositionCount() > 0) return;
-    const exits = effectiveExits();
-    const hottest = botSession.enabled ? await pickHottestUsdtSymbols(12) : [];
-    const dashboard = SYMBOLS.map((s) => s.toUpperCase()).filter((s) => isTradableUsdtSpot(s));
-    const seen = new Set();
-    const universe = [];
-    for (const symbol of [...dashboard, ...hottest.map((row) => row.symbol)]) {
-      if (seen.has(symbol) || isPeggedSymbol(symbol)) continue;
-      seen.add(symbol);
-      universe.push(symbol);
-    }
+
+    const universe = COIL_SYMBOLS.filter((symbol) => isTradableUsdtSpot(symbol) && !isPeggedSymbol(symbol));
     if (!universe.length) {
-      lastSetupNote = `Flat · no liquid non-peg pairs · TP ${exits.takeProfit}% / SL ${exits.stopLoss}%`;
+      lastSetupNote = "Flat · coil majors are not tradable yet";
       return;
     }
 
     const ready = [];
-    for (let i = 0; i < universe.length; i += 4) {
-      const batch = universe.slice(i, i + 4);
-      const part = await Promise.all(
-        batch.map(async (symbol) => {
-          try {
-            const hunt = !isDashboardSymbol(symbol);
-            ensureMarketSlot(symbol, hunt);
-            if (hunt) botHuntSymbols.add(symbol);
-            const [k15, k1h] = await Promise.all([fetchKlines(symbol, 40, "15m"), fetchKlines(symbol, 48, "1h")]);
-            subscribeKline(symbol);
-            const setup = assessMomentumPullback(k15, k1h);
-            return setup ? { symbol, ...setup, dashboard: !hunt } : null;
-          } catch (err) {
-            console.warn(`[AUTOPILOT] scan ${symbol} failed:`, err.message);
-            return null;
-          }
-        }),
-      );
-      ready.push(...part.filter(Boolean));
+    for (const symbol of universe) {
+      try {
+        ensureMarketSlot(symbol, !isDashboardSymbol(symbol));
+        const [k15, k1h] = await Promise.all([fetchKlines(symbol, 80, "15m"), fetchKlines(symbol, 48, "1h")]);
+        subscribeKline(symbol);
+        const setup = assessCoilBreak(k15, k1h);
+        if (setup) ready.push({ symbol, ...setup });
+      } catch (err) {
+        console.warn(`[AUTOPILOT] coil ${symbol} failed:`, err.message);
+      }
     }
 
-    ready.sort((a, b) => b.dashboard - a.dashboard || b.trendStrength - a.trendStrength);
-    const preview = ready
-      .slice(0, 3)
-      .map((row) => `${row.symbol} RSI ${row.rsi.toFixed(1)}`)
-      .join(", ");
-    console.log(`[AUTOPILOT] setups ${ready.length}/${universe.length} · ${preview || "none"} · TP ${exits.takeProfit}% / SL ${exits.stopLoss}%`);
+    ready.sort((a, b) => b.volMultiple - a.volMultiple);
+    const preview = ready.map((row) => `${row.symbol} ${row.width.toFixed(2)}%`).join(", ");
+    console.log(`[AUTOPILOT] coils ${ready.length}/${universe.length} · ${preview || "none"}`);
     lastSetupNote = ready.length
-      ? `Ready ${ready[0].symbol} 15m RSI ${ready[0].rsi.toFixed(1)} rising · 1h uptrend`
-      : `Flat · no 15m pullback in a 1h uptrend · TP ${exits.takeProfit}% / SL ${exits.stopLoss}%`;
+      ? `Ready ${ready[0].symbol} coil ${ready[0].width.toFixed(2)}% · target ${ready[0].takeProfitPct.toFixed(2)}% · stop ${ready[0].stopLossPct.toFixed(2)}%`
+      : "Flat · no 8h coil breaking out on BTC, ETH, SOL, BNB, XRP";
 
     const now = Date.now();
     const cooldownMs = config.cooldownMinutes * 60 * 1000;
     if (botSession.enabled && botOpenPositionCount() === 0) {
-      const buy = ready.find((row) => now - (marketData[row.symbol]?.lastSignalTime || 0) > cooldownMs);
+      const buy = ready.find((row) => {
+        const slot = marketData[row.symbol];
+        if (!slot || slot.lastCoilBar === row.closeTime) return false;
+        return now - (slot.lastSignalTime || 0) > cooldownMs;
+      });
       if (buy) {
-        console.log(`[AUTOPILOT] BUY ${buy.symbol} 15m RSI ${buy.rsi.toFixed(2)} turning up, price above the 24h average`);
-        marketData[buy.symbol].lastSignalTime = now;
-        await botMaybeBuy(buy.symbol, buy.price, buy.rsi);
+        console.log(
+          `[AUTOPILOT] COIL ${buy.symbol} width ${buy.width.toFixed(2)}% · target ${buy.takeProfitPct.toFixed(2)}% · stop ${buy.stopLossPct.toFixed(2)}%`,
+        );
+        const slot = marketData[buy.symbol];
+        slot.lastCoilBar = buy.closeTime;
+        slot.lastSignalTime = now;
+        await botMaybeBuy(buy.symbol, buy.price, buy.rsi, {
+          takeProfitPct: buy.takeProfitPct,
+          stopLossPct: buy.stopLossPct,
+          width: buy.width,
+        });
       }
       return;
     }
@@ -2484,8 +2556,8 @@ async function scanAutopilotUniverse() {
         const plan = resolveCryptoBuy(row.symbol, config.tradeAmountUsdt);
         if (!plan) continue;
         const slot = marketData[row.symbol];
-        if (!slot || slot.setupArmed || now - slot.lastSignalTime <= cooldownMs) continue;
-        slot.setupArmed = true;
+        if (!slot || slot.lastCoilBar === row.closeTime || now - slot.lastSignalTime <= cooldownMs) continue;
+        slot.lastCoilBar = row.closeTime;
         slot.lastSignalTime = now;
         const usdt = stableSpendable("USDT");
         const usdc = stableSpendable("USDC");
@@ -2493,21 +2565,19 @@ async function scanAutopilotUniverse() {
         sendChannelTelegram(
           "crypto",
           `⚡ <b>BUY SIGNAL (${row.symbol})</b>\n\n` +
-            `<b>15m RSI:</b> ${row.rsi.toFixed(2)} and turning up\n` +
+            `<b>Coil:</b> ${row.width.toFixed(2)}% over the last 8 hours, just broken\n` +
             `<b>Trend:</b> 1h close is above the 24-hour average\n` +
+            `<b>Target / stop:</b> ${row.takeProfitPct.toFixed(2)}% / ${row.stopLossPct.toFixed(2)}%\n` +
             `<b>Price:</b> $${row.price}\n` +
             `<b>Pay with:</b> ${plan.quote}\n` +
             `<b>USDT:</b> $${usdt.total.toFixed(2)} · <b>USDC:</b> $${usdc.total.toFixed(2)}`,
         );
       }
     }
-
-    for (const symbol of universe) {
-      if (ready.some((row) => row.symbol === symbol)) continue;
-      if (marketData[symbol]) marketData[symbol].setupArmed = false;
-    }
   } catch (err) {
     console.error("[AUTOPILOT] universe scan error:", err.message);
+  } finally {
+    coilScanBusy = false;
   }
 }
 
@@ -2819,6 +2889,8 @@ function connectMultiStreamWS() {
         const sym = kline.s;
         const closePrice = parseFloat(kline.c);
         const volume = parseFloat(kline.v);
+        const highPrice = parseFloat(kline.h);
+        const lowPrice = parseFloat(kline.l);
 
         const target = ensureMarketSlot(sym);
 
@@ -2860,7 +2932,7 @@ function connectMultiStreamWS() {
         }
 
         if (botSession.enabled && botSession.positions[sym]) {
-          const botSell = evaluateBotSellSignal(sym, closePrice, target.lastRsi);
+          const botSell = evaluateBotSellSignal(sym, closePrice, target.lastRsi, { high: highPrice, low: lowPrice });
           const botExits = new Set(["TAKE_PROFIT", "STOP_LOSS", "BREAKEVEN", "TIME_STOP", "FLATTEN_PEG"]);
           if (botExits.has(botSell?.type)) {
             void botMaybeSell(sym, botSell.type, target.lastRsi).catch((err) => console.error("[AUTOPILOT SELL]", err.message));

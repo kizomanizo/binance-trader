@@ -832,7 +832,7 @@
     <div class="container">
       <header>
         <h1>Binance Micro-Trader Terminal</h1>
-        <p class="subtitle">15-minute pullbacks in a 1-hour uptrend · Crypto + US Stocks</p>
+        <p class="subtitle">8-hour coil breaks on BTC, ETH, SOL, BNB, XRP · one clip</p>
 
         <div class="override-bar">
           <button id="unlock-btn" onclick="toggleManualUnlock()" class="override-btn">🔓 Unlock Impulse Trade Controls</button>
@@ -891,7 +891,7 @@
       <div class="section-heading">
         <div>
           <div class="section-title">Crypto · Binance Spot</div>
-          <div class="section-sub">Charts stay 1-minute. Buy alerts fire on a 15-minute RSI turn-up while the 1-hour trend is up.</div>
+          <div class="section-sub">Charts stay 1-minute. Buys fire when an 8-hour coil breaks out on BTC, ETH, SOL, BNB, or XRP while the 1-hour trend is up.</div>
         </div>
       </div>
       <div class="grid" id="market-grid"></div>
@@ -1119,7 +1119,7 @@
         <form autocomplete="off" onsubmit="event.preventDefault();">
         <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-yellow); margin-bottom: 0.4rem">🤖 Autopilot</div>
         <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 1rem">
-          Buys a 15-minute RSI pullback only while price is above its 24-hour average, with a volume surge. One clip. Pegged coins such as RLUSD are sold back to USDT. Take-profit fills on price. The stop is kept inside the target.
+          Buys a break out of an 8-hour coil on BTC, ETH, SOL, BNB, or XRP, and only while the 1-hour trend is up. One clip. The target is twice the coil and the stop is 0.6× the coil. Flat after 12 hours if neither prints. Pegged coins such as RLUSD are sold back to USDT.
         </div>
 
         <div class="bot-status-grid">
