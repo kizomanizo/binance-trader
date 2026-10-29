@@ -891,7 +891,7 @@
       <div class="section-heading">
         <div>
           <div class="section-title">Crypto · Binance Spot</div>
-          <div class="section-sub">Charts stay 1-minute. Buys fire when an 8-hour coil breaks out on BTC, ETH, SOL, BNB, or XRP while the 1-hour trend is up.</div>
+          <div class="section-sub">Charts stay 1-minute. Buys fire when an 8-hour coil breaks out on BTC, ETH, SOL, BNB, or XRP while the 1-hour trend is up. A stop waits for a 15-minute close through 3%.</div>
         </div>
       </div>
       <div class="grid" id="market-grid"></div>
@@ -1014,7 +1014,7 @@
         <div class="form-group">
           <label>Stop Loss (%)</label>
           <input type="number" id="cfg-stopLoss" step="0.1" min="0.1" placeholder="1.5" />
-          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">Must stay below take-profit. A wider stop is capped so one loss cannot erase one win.</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem">Autopilot raises anything under 3% up to 3%, and only sells that stop when a 15-minute candle closes through it.</div>
         </div>
 
         <div class="form-group">
@@ -1119,7 +1119,7 @@
         <form autocomplete="off" onsubmit="event.preventDefault();">
         <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-yellow); margin-bottom: 0.4rem">🤖 Autopilot</div>
         <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 1rem">
-          Buys a break out of an 8-hour coil on BTC, ETH, SOL, BNB, or XRP, and only while the 1-hour trend is up. One clip. The target is twice the coil and the stop is 0.6× the coil. Flat after 12 hours if neither prints. Pegged coins such as RLUSD are sold back to USDT.
+          Buys a break out of an 8-hour coil on BTC, ETH, SOL, BNB, or XRP, and only while the 1-hour trend is up. One clip. Target is the saved take-profit (2%). Stop is the saved stop, and never tighter than 3%, and only when a 15-minute candle closes through it. Pegged coins such as RLUSD are sold back to USDT.
         </div>
 
         <div class="bot-status-grid">

@@ -306,18 +306,31 @@ function roundTripFeePercent() {
   return getTakerFeeRate() * 200;
 }
 
-// A 2% target with a 3% stop needs a 60% win rate before fees. Cap the stop
-// inside the target, and refuse a target that cannot clear four round trips.
+// The coil book was selling 0.6× the 8-hour range, about 0.6–1%, on a 1-minute wick.
+// A stop under 3% sits inside that noise. Honor a wider saved stop, never a tighter one.
+function clipTargetPercent() {
+  const configured = parseFloat(config.takeProfitPercent);
+  const target = Number.isFinite(configured) && configured > 0 ? configured : 2;
+  return parseFloat(Math.max(0.8, target).toFixed(2));
+}
+
+function clipStopPercent() {
+  const configured = parseFloat(config.stopLossPercent);
+  const stop = Number.isFinite(configured) && configured > 0 ? configured : 3;
+  return parseFloat(Math.max(3, stop).toFixed(2));
+}
+
+function isFifteenMinuteClose(openTimeMs) {
+  const minute = new Date(Number(openTimeMs)).getUTCMinutes();
+  return Number.isFinite(minute) && minute % 15 === 14;
+}
+
 function effectiveExits() {
   const fee = roundTripFeePercent();
-  let takeProfit = parseFloat(config.takeProfitPercent);
-  let stopLoss = parseFloat(config.stopLossPercent);
-  if (!Number.isFinite(takeProfit) || takeProfit <= 0) takeProfit = 2;
-  if (!Number.isFinite(stopLoss) || stopLoss <= 0) stopLoss = 1.5;
+  let takeProfit = clipTargetPercent();
   const minTp = Math.max(fee * 4, 0.8);
   if (takeProfit < minTp) takeProfit = minTp;
-  const maxSl = takeProfit * 0.75;
-  if (stopLoss > maxSl) stopLoss = maxSl;
+  const stopLoss = clipStopPercent();
   const breakevenArm = Math.max(fee * 3, takeProfit * 0.5);
   return {
     takeProfit: parseFloat(takeProfit.toFixed(2)),
@@ -562,44 +575,21 @@ function evaluateBotSellSignal(symbol, closePrice, rsi, extreme) {
   if (isPeggedSymbol(symbol)) return { type: "FLATTEN_PEG", avgEntryPrice: entry, netPnl };
   if (!entry || netPnl === null) return null;
   if (!parseFloat(pos.openedAt)) {
-    // A restored clip has no open time. Stamp the session start so a peg that
-    // never moved can still hit the time stop instead of sitting there forever.
-    pos.openedAt = parseFloat(botSession.startedAt) || Date.now() - 13 * 60 * 60 * 1000;
+    pos.openedAt = parseFloat(botSession.startedAt) || Date.now();
     persistBotSession();
   }
 
-  const exits = effectiveExits();
   const prevMax = Number.isFinite(parseFloat(pos.maxNetPnl)) ? parseFloat(pos.maxNetPnl) : -Infinity;
   pos.maxNetPnl = Math.max(prevMax, netPnl);
   if (pos.maxNetPnl > prevMax + 0.05) persistBotSession();
 
-  const openedAt = parseFloat(pos.openedAt) || 0;
-  const coilTp = parseFloat(pos.takeProfitPct);
-  const coilSl = parseFloat(pos.stopLossPct);
-  if (Number.isFinite(coilTp) && coilTp > 0 && Number.isFinite(coilSl) && coilSl > 0) {
-    const high = Number.isFinite(extreme?.high) ? extreme.high : closePrice;
-    const low = Number.isFinite(extreme?.low) ? extreme.low : closePrice;
-    const lowPnl = ((low - entry) / entry) * 100;
-    const highPnl = ((high - entry) / entry) * 100;
-    if (lowPnl <= -coilSl) return { type: "STOP_LOSS", avgEntryPrice: entry, netPnl };
-    if (highPnl >= coilTp) return { type: "TAKE_PROFIT", avgEntryPrice: entry, netPnl };
-    if (openedAt && Date.now() - openedAt > 12 * 60 * 60 * 1000 && netPnl < exits.fee) {
-      return { type: "TIME_STOP", avgEntryPrice: entry, netPnl };
-    }
-    return null;
-  }
-
-  if (netPnl >= exits.takeProfit) return { type: "TAKE_PROFIT", avgEntryPrice: entry, netPnl };
-  if (typeof rsi === "number" && rsi >= config.rsiOverbought && netPnl >= Math.max(exits.fee * 3, 0.4)) {
-    return { type: "TAKE_PROFIT", avgEntryPrice: entry, netPnl };
-  }
-  if (pos.maxNetPnl >= exits.breakevenArm && netPnl <= Math.max(exits.fee, 0.15) && netPnl < pos.maxNetPnl) {
-    return { type: "BREAKEVEN", avgEntryPrice: entry, netPnl };
-  }
-  if (netPnl <= -exits.stopLoss) return { type: "STOP_LOSS", avgEntryPrice: entry, netPnl };
-
-  if (openedAt && Date.now() - openedAt > 12 * 60 * 60 * 1000 && netPnl < exits.fee) {
-    return { type: "TIME_STOP", avgEntryPrice: entry, netPnl };
+  const stopPct = clipStopPercent();
+  const targetPct = clipTargetPercent();
+  const closePnl = ((closePrice - entry) / entry) * 100;
+  if (closePnl >= targetPct) return { type: "TAKE_PROFIT", avgEntryPrice: entry, netPnl };
+  // A 1-minute wick is not a stop. Wait until the 15-minute candle closes through it.
+  if (extreme?.fifteenMinuteClose && closePnl <= -stopPct) {
+    return { type: "STOP_LOSS", avgEntryPrice: entry, netPnl };
   }
   return null;
 }
@@ -2122,7 +2112,7 @@ async function botMaybeSell(symbol, reason, rsi, { force = false } = {}) {
   const ownedBusy = !botSession.busy;
   botSession.busy = true;
   try {
-    const result = await placeMarketOrder({ symbol, side: "SELL", quantity: pos.qty, source: "bot" });
+    const result = await placeMarketOrder({ symbol, side: "SELL", quantity: pos.qty, sellAll: true, source: "bot" });
     if (!result.success) {
       botSession.lastAction = `SELL failed ${symbol}: ${result.error}`;
       persistBotSession();
@@ -2485,8 +2475,8 @@ function assessCoilBreak(klines15, klines1h, now = Date.now()) {
     width,
     volMultiple: lastVol / avgVol,
     closeTime: Number(bar[6]),
-    stopLossPct: parseFloat(Math.min(1.1, Math.max(0.35, width * 0.6)).toFixed(2)),
-    takeProfitPct: parseFloat(Math.max(1.2, width * 2).toFixed(2)),
+    stopLossPct: clipStopPercent(),
+    takeProfitPct: clipTargetPercent(),
   };
 }
 
@@ -2889,8 +2879,6 @@ function connectMultiStreamWS() {
         const sym = kline.s;
         const closePrice = parseFloat(kline.c);
         const volume = parseFloat(kline.v);
-        const highPrice = parseFloat(kline.h);
-        const lowPrice = parseFloat(kline.l);
 
         const target = ensureMarketSlot(sym);
 
@@ -2932,7 +2920,9 @@ function connectMultiStreamWS() {
         }
 
         if (botSession.enabled && botSession.positions[sym]) {
-          const botSell = evaluateBotSellSignal(sym, closePrice, target.lastRsi, { high: highPrice, low: lowPrice });
+          const botSell = evaluateBotSellSignal(sym, closePrice, target.lastRsi, {
+            fifteenMinuteClose: isFifteenMinuteClose(kline.t),
+          });
           const botExits = new Set(["TAKE_PROFIT", "STOP_LOSS", "BREAKEVEN", "TIME_STOP", "FLATTEN_PEG"]);
           if (botExits.has(botSell?.type)) {
             void botMaybeSell(sym, botSell.type, target.lastRsi).catch((err) => console.error("[AUTOPILOT SELL]", err.message));
@@ -3371,6 +3361,7 @@ app.use(express.static("public"));
 
   app.listen(PORT, async () => {
     console.log(`Terminal running on http://localhost:${PORT}`);
+    console.log(`[AUTOPILOT] stop ${clipStopPercent()}% on a 15-minute close · target ${clipTargetPercent()}%`);
     if (desk.notified) return;
     const reason = botSession.haltReason || (botSession.userStopped ? "Desk is off." : "Desk is idle.");
     await sendTelegramAlert(`🟢 <b>Trader online</b>\n\n${reason}`);
