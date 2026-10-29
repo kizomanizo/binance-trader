@@ -686,6 +686,7 @@ const STOCKS_ENABLED = false;
 const DESK_GENERATION = 2;
 const DESK_CLIP_CAP_USDT = 40;
 const DESK_FLOOR_FRACTION = 0.25;
+const DESK_MAX_LOSS_USDT = 8;
 const BOT_UNIVERSE_SIZE = 25;
 const BOT_SCAN_MS = 5 * 60 * 1000;
 const BOT_MIN_QUOTE_VOLUME = 3_000_000;
@@ -1955,10 +1956,33 @@ function botOpenPositionCount() {
   return Object.keys(botSession.positions || {}).length;
 }
 
+function deskLossFloor(seed) {
+  const base = parseFloat(seed) || 0;
+  if (!(base > 0)) return 0;
+  return parseFloat(Math.max(0, base - DESK_MAX_LOSS_USDT).toFixed(2));
+}
+
+function sessionLossFloor() {
+  const seed = parseFloat(botBankroll.seedUsdt) || parseFloat(botSession.startingEquity) || parseFloat(botSession.budgetUsdt) || 0;
+  return deskLossFloor(seed);
+}
+
 async function enforceLossFloor() {
   if (!botSession.enabled || botSession.halted || botSession.busy) return false;
   const equity = (parseFloat(botSession.cashUsdt) || 0) + markToMarketBotPositions().value;
-  const floor = parseFloat(botSession.floorUsdt) || (parseFloat(botBankroll.seedUsdt) || 0) * DESK_FLOOR_FRACTION;
+  const floor = sessionLossFloor();
+  const stored = parseFloat(botSession.floorUsdt) || 0;
+  if (floor > 0 && Math.abs(stored - floor) > 0.009) {
+    const seed = parseFloat(botBankroll.seedUsdt) || parseFloat(botSession.startingEquity) || 0;
+    botSession.floorUsdt = floor;
+    persistBotSession();
+    console.log(`[DESK] loss floor $${floor.toFixed(2)} · halts $${DESK_MAX_LOSS_USDT} under the $${seed.toFixed(2)} seed`);
+    sendTelegramAlert(
+      `🛑 <b>DESK FLOOR MOVED</b>\n\n` +
+        `Halt is now <b>$${floor.toFixed(2)}</b>, $${DESK_MAX_LOSS_USDT} under the $${seed.toFixed(2)} seed.\n` +
+        `Cash is $${equity.toFixed(2)}. The desk stays on until equity tags that floor.`,
+    );
+  }
   if (!(floor > 0) || equity > floor + 0.05) return false;
 
   botSession.halted = true;
@@ -2000,7 +2024,7 @@ async function armSpotDesk() {
 
   const allocation = parseFloat(usdt.toFixed(2));
   const clip = deskClip(allocation);
-  const floor = parseFloat((allocation * DESK_FLOOR_FRACTION).toFixed(2));
+  const floor = deskLossFloor(allocation);
   config.tradeAmountUsdt = clip;
   saveSettingToDb("tradeAmountUsdt", clip);
   alertConfig.stocksTelegramEnabled = false;
@@ -2027,7 +2051,7 @@ async function armSpotDesk() {
     `🤖 <b>SPOT DESK ON</b>\n\n` +
       `<b>Capital:</b> $${allocation.toFixed(2)} USDT\n` +
       `<b>Clip:</b> $${clip.toFixed(2)} · one position\n` +
-      `<b>Floor:</b> $${floor.toFixed(2)} (stops after a 75% loss)\n` +
+      `<b>Floor:</b> $${floor.toFixed(2)} (halts $${DESK_MAX_LOSS_USDT} under the seed)\n` +
       `<b>Rule:</b> 8h coil break on BTC, ETH, SOL, BNB, XRP while the 1h trend is up\n` +
       `<b>Stocks:</b> off`,
   );
@@ -2228,7 +2252,7 @@ async function startBotSession({ budgetUsdt, alertProfitPercent, alertLossPercen
     alertLossPercent,
     startingEquity: allocation,
     cashUsdt: allocation,
-    floorUsdt: parseFloat((allocation * DESK_FLOOR_FRACTION).toFixed(2)),
+    floorUsdt: deskLossFloor(allocation),
     halted: false,
     userStopped: false,
     deskGeneration: DESK_GENERATION,
@@ -2246,7 +2270,8 @@ async function startBotSession({ budgetUsdt, alertProfitPercent, alertLossPercen
       `<b>Clip size:</b> $${Number(config.tradeAmountUsdt).toFixed(2)} (strategy default)\n` +
       `<b>Alerts:</b> +${alertProfitPercent}% / −${alertLossPercent}% session P/L\n` +
       `<b>Pairs:</b> ${COIL_SYMBOLS.join(", ")}\n` +
-      `<b>Exits:</b> target 2× the coil, stop 0.6× the coil. Flat after 12 hours if neither prints.`,
+      `<b>Exits:</b> target ${clipTargetPercent()}% on the close. Stop ${clipStopPercent()}% only when a 15-minute candle closes through it.\n` +
+      `<b>Floor:</b> $${deskLossFloor(allocation).toFixed(2)} (halts $${DESK_MAX_LOSS_USDT} under the seed)`,
   );
   void scanAutopilotUniverse().catch((err) => console.error("[AUTOPILOT] scan", err.message));
   return { success: true, resumed: false, status: getBotStatus() };
